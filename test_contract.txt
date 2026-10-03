@@ -1,0 +1,79 @@
+MASTER SOFTWARE LICENSE AND DISTRIBUTION AGREEMENT
+
+This Master Software License and Distribution Agreement (this "Agreement") is entered into and made effective as of March 14, 2023 (the "Effective Date"), by and between Northwind Technologies, Inc., a Delaware corporation with its principal place of business at 500 Harbor Boulevard, San Francisco, California ("Licensor"), and Blue Meridian Distributors LLC, a New York limited liability company with offices at 1200 Commerce Street, New York, New York ("Distributor"). Licensor and Distributor are referred to herein individually as a "Party" and collectively as the "Parties."
+
+RECITALS
+
+WHEREAS, Licensor develops and owns proprietary software known as the "Northwind Analytics Platform" (the "Software"); and
+
+WHEREAS, Distributor desires to obtain, and Licensor desires to grant, certain rights to market, distribute, and sublicense the Software in the Territory, subject to the terms and conditions set forth below.
+
+NOW, THEREFORE, in consideration of the mutual covenants contained herein, the Parties agree as follows:
+
+1. DEFINITIONS.
+"Territory" means the United States and Canada. "Confidential Information" means any non-public information disclosed by one Party to the other. "Affiliate" means any entity controlling, controlled by, or under common control with a Party.
+
+2. LICENSE GRANT.
+Subject to the terms of this Agreement, Licensor hereby grants to Distributor a non-exclusive, non-transferable license to market, promote, and distribute the Software to end users within the Territory during the Term. Distributor shall have no right to sublicense, assign, or otherwise transfer the license granted herein except as expressly permitted in writing by Licensor. This license is limited and does not grant Distributor any ownership interest in the Software.
+
+3. EXCLUSIVITY.
+During the Term, Licensor agrees that it shall not appoint any other distributor for the Software within the metropolitan New York region, and Distributor shall be the sole and exclusive distributor of the Software in that region.
+
+4. TERM AND RENEWAL.
+This Agreement shall commence on the Effective Date and shall continue in full force and effect for an initial term of three (3) years (the "Initial Term"), expiring on March 13, 2026, unless earlier terminated in accordance with Section 12. Thereafter, this Agreement shall automatically renew for successive one (1) year renewal terms unless either Party provides written notice of non-renewal at least ninety (90) days prior to the end of the then-current term.
+
+5. INTELLECTUAL PROPERTY OWNERSHIP.
+All right, title, and interest in and to the Software, including all improvements, modifications, and derivative works thereof, shall be and remain the sole and exclusive property of Licensor. Any developments or enhancements created by Distributor relating to the Software shall be assigned to and owned exclusively by Licensor.
+
+6. NON-COMPETE.
+During the Term and for a period of twelve (12) months following termination, Distributor shall not, directly or indirectly, develop, market, or distribute any product that competes with the Software within the Territory.
+
+7. NON-SOLICITATION.
+During the Term and for one (1) year thereafter, neither Party shall solicit for employment any employee of the other Party who was involved in the performance of this Agreement, without the prior written consent of the other Party.
+
+8. FEES AND REVENUE SHARING.
+Distributor shall pay Licensor a royalty equal to thirty percent (30%) of all net revenues derived from distribution of the Software. Payment shall be made within thirty (30) days following the end of each calendar quarter.
+
+9. AUDIT RIGHTS.
+Licensor shall have the right, upon reasonable prior notice and no more than once per calendar year, to inspect and audit Distributor's books and records relating to the distribution of the Software to verify Distributor's compliance with its payment obligations under this Agreement.
+
+10. WARRANTY.
+Licensor warrants that the Software will perform substantially in accordance with its documentation for a period of ninety (90) days from the date of delivery. Distributor's sole remedy for breach of this warranty shall be repair or replacement of the Software.
+
+11. LIMITATION OF LIABILITY.
+IN NO EVENT SHALL EITHER PARTY'S AGGREGATE LIABILITY ARISING OUT OF OR RELATED TO THIS AGREEMENT EXCEED THE TOTAL AMOUNT OF FEES PAID BY DISTRIBUTOR TO LICENSOR DURING THE TWELVE (12) MONTHS PRECEDING THE EVENT GIVING RISE TO THE CLAIM. IN NO EVENT SHALL EITHER PARTY BE LIABLE FOR ANY INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES.
+
+12. TERMINATION.
+Either Party may terminate this Agreement for convenience upon sixty (60) days' prior written notice to the other Party. Either Party may also terminate immediately upon a material breach by the other Party that remains uncured for thirty (30) days after written notice.
+
+13. LIQUIDATED DAMAGES.
+In the event Distributor discloses Confidential Information in breach of Section 15, Distributor shall pay Licensor liquidated damages in the amount of fifty thousand dollars ($50,000) per occurrence, which the Parties agree is a reasonable estimate of the harm caused and not a penalty.
+
+14. INSURANCE.
+Distributor shall maintain, at its own expense, commercial general liability insurance with coverage of not less than two million dollars ($2,000,000) per occurrence, and shall name Licensor as an additional insured under such policy.
+
+15. CONFIDENTIALITY.
+Each Party agrees to hold the other Party's Confidential Information in strict confidence and not to disclose it to any third party without prior written consent, both during the Term and for a period of five (5) years thereafter.
+
+16. ASSIGNMENT AND CHANGE OF CONTROL.
+Neither Party may assign this Agreement, in whole or in part, without the prior written consent of the other Party, and any attempted assignment in violation of this Section shall be void. In the event of a change of control of Distributor, whether by merger, acquisition, or sale of substantially all of its assets, Licensor may terminate this Agreement upon thirty (30) days' written notice.
+
+17. GOVERNING LAW.
+This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of laws principles. Any dispute arising hereunder shall be subject to the exclusive jurisdiction of the state and federal courts located in Wilmington, Delaware.
+
+18. ENTIRE AGREEMENT.
+This Agreement constitutes the entire agreement between the Parties with respect to its subject matter and supersedes all prior negotiations, understandings, and agreements, whether written or oral.
+
+IN WITNESS WHEREOF, the Parties have executed this Agreement as of the Effective Date first written above.
+
+NORTHWIND TECHNOLOGIES, INC.
+
+By: ____________________________
+Name: EleanorVance
+Title: Chief Executive Officer
+
+BLUE MERIDIAN DISTRIBUTORS LLC
+
+By: ____________________________
+Name: Marcus Hale
+Title: Managing Director
