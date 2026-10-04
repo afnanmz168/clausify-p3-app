@@ -229,7 +229,8 @@ if not mu.models_available():
         "Trained models not found.\n\n"
         f"Expected them under: `{mu.MODELS_DIR}`\n\n"
         "Set the `CUAD_MODELS_DIR` environment variable to the folder that "
-        "contains `presence_mil/final/` and `span/final/`."
+        "contains `presence_mil/final/` and `span/final/`, or make sure the Hugging Face "
+        f"repo `{mu.HF_REPO}` is reachable so they can be downloaded."
     )
     st.stop()
 

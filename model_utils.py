@@ -29,14 +29,37 @@ from transformers import (
 )
 
 # --------------------------------------------------------------------------- #
-# Paths — models live in the sibling "final project p3" deliverable folder.
-# Override with the CUAD_MODELS_DIR environment variable if you move them.
+# Paths. Where the trained models are found, in order:
+#   1. the CUAD_MODELS_DIR environment variable;
+#   2. a "models/" folder next to this file;
+#   3. the sibling "final project p3/notebooks/outputs" training folder (local use);
+#   4. otherwise they are downloaded once from the Hugging Face Hub repo in
+#      CLAUSIFY_HF_REPO (default af123Af/clausify-models) — this is what a cloud
+#      deployment such as Streamlit Community Cloud uses.
 # --------------------------------------------------------------------------- #
 BASE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_MODELS = os.path.join(
-    os.path.dirname(BASE), "final project p3", "notebooks", "outputs"
-)
-MODELS_DIR = os.environ.get("CUAD_MODELS_DIR", _DEFAULT_MODELS)
+HF_REPO = os.environ.get("CLAUSIFY_HF_REPO", "af123Af/clausify-models")
+
+
+def _has_models(d):
+    return all(os.path.exists(os.path.join(d, m, "final", "config.json"))
+               for m in ("presence_mil", "span"))
+
+
+def _resolve_models_dir():
+    for d in (os.environ.get("CUAD_MODELS_DIR"),
+              os.path.join(BASE, "models"),
+              os.path.join(os.path.dirname(BASE), "final project p3", "notebooks", "outputs")):
+        if d and _has_models(d):
+            return d
+    try:
+        from huggingface_hub import snapshot_download
+        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "span/*"])
+    except Exception:            # offline / repo missing: app.py shows a clear error
+        return os.environ.get("CUAD_MODELS_DIR", os.path.join(BASE, "models"))
+
+
+MODELS_DIR = _resolve_models_dir()
 PRESENCE_DIR = os.path.join(MODELS_DIR, "presence_mil", "final")
 SPAN_DIR = os.path.join(MODELS_DIR, "span", "final")
 
