@@ -15,6 +15,7 @@ Both run on CPU for portability (no GPU / MPS memory pressure).
 """
 
 import os
+import re
 import json
 import functools
 
@@ -238,6 +239,41 @@ def extract_span(question, window):
     return best_text, best_conf
 
 
+def _paragraphs(text, max_len=700):
+    """Split a window into paragraphs; long paragraphs are split into sentences."""
+    out = []
+    for p in re.split(r"\n\s*\n", text):
+        p = p.strip()
+        if len(p) > max_len:
+            out.extend(s.strip() for s in re.split(r"(?<=[.;:])\s+(?=[A-Z(\"“0-9])", p))
+        elif p:
+            out.append(p)
+    out = [p for p in out if len(p) >= 30]
+    return out or [text.strip()]
+
+
+def locate_clause(category, window):
+    """
+    Pick the paragraph of `window` that the presence model scores highest for
+    `category`. The span model alone is not a reliable locator: it was trained on
+    focus windows with the answer ~150 chars in and tends to return whatever text
+    sits there, whatever the question. The presence model does read the question,
+    so it chooses the paragraph and the span model only highlights inside it.
+
+    Returns: (paragraph, highlighted_span)
+    """
+    tok, model = _load_presence()
+    paras = _paragraphs(window)
+    q = CAT_QUESTIONS[category]
+    enc = tok([q] * len(paras), paras, truncation=True, max_length=PRESENCE_MAXLEN,
+              padding=True, return_tensors="pt").to(DEVICE)
+    with torch.no_grad():
+        lg = model(**enc).logits
+    para = paras[int((lg[:, 1] - lg[:, 0]).argmax())]
+    span, _ = extract_span(q, para)
+    return para, span if span and span.lower() in para.lower() else ""
+
+
 def analyze(text, threshold=0.5, progress=None):
     """
     Full pipeline for one contract.
@@ -251,13 +287,13 @@ def analyze(text, threshold=0.5, progress=None):
     present = []
     for cat, sc in scores.items():
         if sc >= threshold:
-            span, span_conf = extract_span(CAT_QUESTIONS[cat], best_window[cat])
+            para, span = locate_clause(cat, best_window[cat])
             level, reason = risk_of(cat)
             present.append({
                 "category": cat,
                 "presence_score": sc,
-                "span_text": span,
-                "span_conf": span_conf,
+                "span_text": para,          # the located paragraph, quoted on the card
+                "highlight": span,          # span-model highlight inside it ("" if none)
                 "risk": level,
                 "reason": reason,
             })
@@ -265,3 +301,135 @@ def analyze(text, threshold=0.5, progress=None):
     # sort by risk (High → Low), then by confidence within a risk band
     present.sort(key=lambda d: (RISK_ORDER[d["risk"]], -d["presence_score"]))
     return present, scores
+
+
+# --------------------------------------------------------------------------- #
+# Clause mode — the user pastes a list of separate clauses and expects one
+# categorized card per clause.
+#
+# The presence model scores (category question, text). On a single clause some
+# categories score high on almost anything ("Parties" fires on any text naming
+# the two sides), so each category's log-odds is standardized against how it
+# scores on real CUAD clauses of OTHER categories (clause_calibration.json, from
+# the training split; see calibrate_clause_mode.py), and the clause gets the
+# category with the highest standardized score.
+# --------------------------------------------------------------------------- #
+_CAL_PATH = os.path.join(BASE, "clause_calibration.json")
+MIN_CLAUSE_CHARS = 40          # shorter fragments (titles, signature lines) are skipped
+AUTO_MAX_CLAUSES = 25          # auto mode: at most this many paragraphs ...
+AUTO_MAX_CHARS = 12000         # ... and this much text to be treated as a clause list
+
+
+@functools.lru_cache(maxsize=1)
+def _calibration():
+    cal = json.load(open(_CAL_PATH))
+    assert cal["categories"] == CATEGORIES, "calibration was built for a different category order"
+    return np.array(cal["neg_mean"]), np.array(cal["neg_std"]), float(cal["unrecognized_below_z"])
+
+
+def clause_eval():
+    """Held-out accuracy of the model-only clause classifier (from the calibration run)."""
+    try:
+        return json.load(open(_CAL_PATH))["eval"]
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def clause_mode_available():
+    return os.path.exists(_CAL_PATH)
+
+
+def split_clauses(text):
+    """Split pasted text into clauses: blank-line separated paragraphs, or, if the
+    text has no blank lines, lines that start a numbered item (1. / 2) / (a) ...)."""
+    text = text.replace("\r\n", "\n").strip()
+    parts = [p.strip() for p in re.split(r"\n\s*\n", text)]
+    if len(parts) == 1:
+        parts = [p.strip() for p in
+                 re.split(r"\n(?=\s*(?:\d+[\.\)]|\([a-z0-9]+\)|[a-z][\.\)])\s)", text)]
+    return [p for p in parts if len(p) >= MIN_CLAUSE_CHARS]
+
+
+def looks_like_clause_list(text):
+    clauses = split_clauses(text)
+    return 2 <= len(clauses) <= AUTO_MAX_CLAUSES and len(text) <= AUTO_MAX_CHARS
+
+
+# Clause headings ("2. EXCLUSIVITY. ...") that name a category are stronger evidence
+# than the model. Only headings that unambiguously name one category are used;
+# anything else (e.g. "Limitation of Liability", which may hide an UNcapped
+# liability) is left to the model.
+_HEADING = re.compile(
+    r"^\s*(?:(?:section|article|clause)\s+)?(?:[0-9ivxIVX]+(?:\.[0-9]+)*[\.\)]?|\([a-z0-9]+\))?\s*"
+    r"([A-Za-z][A-Za-z&/\-’' ]{2,60}?)\s*[\.:—–-]\s", re.IGNORECASE)
+_HEADING_SYNONYMS = {
+    "intellectual property assignment": "Ip Ownership Assignment",
+    "assignment of intellectual property": "Ip Ownership Assignment",
+    "ip assignment": "Ip Ownership Assignment",
+    "ownership of intellectual property": "Ip Ownership Assignment",
+    "perpetual license": "Irrevocable Or Perpetual License",
+    "irrevocable license": "Irrevocable Or Perpetual License",
+    "most favoured nation": "Most Favored Nation",
+    "non-competition": "Non-Compete", "noncompete": "Non-Compete", "non compete": "Non-Compete",
+    "term and renewal": "Renewal Term", "renewal": "Renewal Term", "automatic renewal": "Renewal Term",
+    "expiration": "Expiration Date", "assignment": "Anti-Assignment", "audit": "Audit Rights",
+    "minimum purchase": "Minimum Commitment", "minimum purchase commitment": "Minimum Commitment",
+    "grant of license": "License Grant", "license": "License Grant", "licence grant": "License Grant",
+    "choice of law": "Governing Law", "applicable law": "Governing Law",
+    "source code escrow agreement": "Source Code Escrow", "escrow": "Source Code Escrow",
+    "non-disparagement": "Non-Disparagement", "warranty period": "Warranty Duration",
+}
+
+
+def _norm(s):
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9/& \-]", " ", s.lower())).strip()
+
+
+_HEADING_TO_CAT = {_norm(c): c for c in CATEGORIES}
+_HEADING_TO_CAT.update({_norm(k): v for k, v in _HEADING_SYNONYMS.items()})
+
+
+def heading_category(clause):
+    """Category named by the clause's leading heading, or None."""
+    m = _HEADING.match(clause)
+    if not m or len(m.group(1).split()) > 6:
+        return None
+    return _HEADING_TO_CAT.get(_norm(m.group(1)))
+
+
+def classify_clauses(clauses, progress=None):
+    """
+    One card per clause. Returns a list of dicts in input order:
+        {index, clause, category, risk, reason, source, model_guess, z, presence_score, best_guess, runner_up}
+    source is "heading" when the clause heading names the category, else "model".
+    category is None (risk "Unrecognized") when no category stands out.
+    """
+    tok, model = _load_presence()
+    mean, std, z_cut = _calibration()
+    qs = [CAT_QUESTIONS[c] for c in CATEGORIES]
+    out = []
+    for i, cl in enumerate(clauses):
+        enc = tok(qs, [cl] * len(qs), truncation=True, max_length=PRESENCE_MAXLEN,
+                  padding=True, return_tensors="pt").to(DEVICE)
+        with torch.no_grad():
+            lg = model(**enc).logits
+        log_odds = (lg[:, 1] - lg[:, 0]).cpu().numpy()
+        prob = F.softmax(lg, dim=-1)[:, 1].cpu().numpy()
+        z = (log_odds - mean) / std
+        order = np.argsort(-z)
+        best, second = int(order[0]), int(order[1])
+        by_heading = heading_category(cl)
+        if by_heading:
+            cat, source = by_heading, "heading"
+        else:
+            cat, source = (CATEGORIES[best], "model") if z[best] >= z_cut else (None, "model")
+        level, reason = risk_of(cat) if cat else ("Unrecognized", "No clause category stands out clearly — review manually.")
+        out.append({
+            "index": i + 1, "clause": cl, "category": cat, "risk": level, "reason": reason,
+            "source": source, "model_guess": CATEGORIES[best],
+            "z": float(z[best]), "presence_score": float(prob[best]),
+            "best_guess": CATEGORIES[best], "runner_up": CATEGORIES[second],
+        })
+        if progress is not None:
+            progress((i + 1) / len(clauses))
+    return out

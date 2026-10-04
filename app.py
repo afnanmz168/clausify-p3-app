@@ -162,6 +162,7 @@ STYLE = """
 .clause .conf{ font-size:.76rem; color:#9fb0e6; margin-top:.3rem; }
 .clause .snippet{ margin-top:.6rem; padding:.55rem .7rem; border-radius:10px;
   background:rgba(0,0,0,.22); font-size:.86rem; line-height:1.45; color:#dfe5ff; }
+.clause .snippet mark{ background:rgba(124,92,255,.35); color:#fff; border-radius:3px; padding:0 .1rem; }
 .clause .snippet .lbl{ display:block; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase;
   color:#7f8bbd; margin-bottom:.25rem; }
 
@@ -179,7 +180,9 @@ STYLE = """
 .tag.high{ background:rgba(255,90,122,.18); color:#ff98ac; }
 .tag.med{  background:rgba(247,185,85,.18); color:#ffcf8a; }
 .tag.low{  background:rgba(52,211,153,.18); color:#7ff0c8; }
-.pill-high{ color:#ff98ac; } .pill-med{ color:#ffcf8a; } .pill-low{ color:#7ff0c8; }
+.pill-high{ color:#ff98ac; } .pill-med{ color:#ffcf8a; } .pill-low{ color:#7ff0c8; } .pill-unk{ color:#c3c9e0; }
+.clause.unk{ border-left-color:#8a93b8; } .clause.unk .fill{ background:#8a93b8; }
+.badge2.unk, .tag.unk{ background:rgba(138,147,184,.18); color:#c3c9e0; }
 
 /* input-mode toggle (radio as segmented control) */
 [data-testid="stRadio"] > div{ gap:.6rem; }
@@ -205,7 +208,7 @@ st.markdown(
     """
     <div class="hero">
       <h1>Clausify</h1>
-      <p>Analyze contracts — two trained models detect the clauses, then pull the exact text.</p>
+      <p>Analyze a whole contract or a list of clauses — trained models find each clause type and rank it by risk.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -214,7 +217,7 @@ st.caption(
     "⚠️ Research prototype — **not legal advice**. Risk levels are per clause *category*, scored "
     "for the party with less bargaining power, and have not been reviewed by a lawyer. The risk "
     "badge and category are more reliable than the quoted text, which may not be the exact clause "
-    "— read each card as \"look here\". The confidence bar is a model score, not a probability. "
+    "— read each card as \"look here\". Scores and bars are model scores, not probabilities. "
     "Only the first 30 windows (about 45,500 characters) of a contract are scanned."
 )
 
@@ -243,7 +246,7 @@ mode = st.radio("Choose how to add your contract",
 contract_text, source = "", None
 if mode == "📋 Paste text":
     pasted = st.text_area("Paste", height=180, label_visibility="collapsed",
-                          placeholder="Paste the full contract text here…")
+                          placeholder="Paste a full contract, or a list of clauses separated by blank lines…")
     if pasted.strip():
         contract_text, source = pasted.strip(), "pasted text"
 else:
@@ -252,43 +255,101 @@ else:
         contract_text = uploaded.read().decode("utf-8", errors="ignore")
         source = f"uploaded file · {uploaded.name}"
 
-threshold = st.slider("Presence threshold — a category counts as PRESENT at or above this confidence",
-                      0.10, 0.90, 0.50, 0.05)
+analyze_as = st.radio(
+    "Analyze as",
+    ["✨ Auto", "📄 Whole contract", "🧩 Separate clauses"],
+    horizontal=True,
+    help="Separate clauses: every paragraph you paste is one clause and gets exactly one "
+         "category and risk level. Whole contract: the models scan the document for all 41 "
+         "clause types. Auto picks Separate clauses for a short list of paragraphs.",
+)
+threshold = st.slider("Presence threshold (whole-contract mode) — a category counts as PRESENT "
+                      "at or above this score", 0.10, 0.90, 0.50, 0.05)
 go = st.button("🔍  Analyze contract", type="primary", disabled=not contract_text)
 
 # --------------------------------------------------------------------------- #
 # Result renderer — clauses grouped by risk (High / Medium / Low), poster-style
 # --------------------------------------------------------------------------- #
-_CLS = {"High": "high", "Medium": "med", "Low": "low"}
+_CLS = {"High": "high", "Medium": "med", "Low": "low", "Unrecognized": "unk"}
+LEVELS = ("High", "Medium", "Low", "Unrecognized")
 
 
-def clause_card(it):
-    cls = _CLS[it["risk"]]
-    pct = round(it["presence_score"] * 100)
-    snippet = escape(it["span_text"]) if it["span_text"] else \
-        '<span class="empty">no clean span located</span>'
+def card(title, risk, reason, bar_pct, bar_label, snippet_label, snippet, highlight=""):
+    cls = _CLS[risk]
+    if not snippet:
+        snip = '<span class="empty">no clean span located</span>'
+    else:
+        pos = snippet.lower().find(highlight.lower()) if highlight else -1
+        if pos >= 0 and len(highlight) < len(snippet):
+            end = pos + len(highlight)
+            snip = (escape(snippet[:pos]) + "<mark>" + escape(snippet[pos:end]) + "</mark>"
+                    + escape(snippet[end:]))
+        else:
+            snip = escape(snippet)
+    badge = "UNRECOGNIZED" if risk == "Unrecognized" else f"{risk.upper()} RISK"
     return (
         f'<div class="clause {cls}">'
-        f'  <div class="top"><span class="name">{escape(it["category"])}</span>'
-        f'    <span class="badge2 {cls}">{it["risk"].upper()} RISK</span></div>'
-        f'  <div class="reason">{escape(it["reason"])}</div>'
-        f'  <div class="track"><div class="fill" style="width:{pct}%"></div></div>'
-        f'  <div class="conf">Model 1 · presence confidence {pct}%</div>'
-        f'  <div class="snippet"><span class="lbl">Model 2 · extracted clause</span>“{snippet}”</div>'
+        f'  <div class="top"><span class="name">{escape(title)}</span>'
+        f'    <span class="badge2 {cls}">{badge}</span></div>'
+        f'  <div class="reason">{escape(reason)}</div>'
+        f'  <div class="track"><div class="fill" style="width:{bar_pct}%"></div></div>'
+        f'  <div class="conf">{escape(bar_label)}</div>'
+        f'  <div class="snippet"><span class="lbl">{escape(snippet_label)}</span>“{snip}”</div>'
         f'</div>'
     )
 
 
-def risk_group(items, level):
+def doc_card(it):
+    pct = round(it["presence_score"] * 100)
+    text = it["span_text"] if len(it["span_text"]) <= 700 else it["span_text"][:700] + "…"
+    return card(it["category"], it["risk"], it["reason"], pct,
+                f"Model 1 · presence score {pct}%",
+                "Located clause · Model 1 picks the paragraph, Model 2 highlights the key span",
+                text, it.get("highlight", ""))
+
+
+def clause_mode_card(it):
+    z = it["z"]
+    strength = "strong" if z >= 4 else "moderate" if z >= 2.5 else "weak"
+    pct = int(max(5, min(100, z / 6 * 100)))
+    title = f'Clause {it["index"]} · {it["category"] or "No clear category"}'
+    if it["category"] and it["source"] == "heading":
+        pct = 100
+        agree = "model agrees" if it["model_guess"] == it["category"] else f"model's own guess: {it['model_guess']}"
+        label = f"Category from the clause heading ({agree})"
+    else:
+        label = None
+    label = label or (f"Category match (model): {strength} (score {z:.1f}; runner-up: {it['runner_up']})"
+             if it["category"] else f"Closest category: {it['best_guess']} — match too weak to assign (score {z:.1f})")
+    text = it["clause"] if len(it["clause"]) <= 600 else it["clause"][:600] + "…"
+    return card(title, it["risk"], it["reason"], pct, label, "Your clause", text)
+
+
+def risk_group(items, level, render, noun):
     group = [it for it in items if it["risk"] == level]
     if not group:
         return ""
     cls = _CLS[level]
-    cards = "".join(clause_card(it) for it in group)
+    head = "UNRECOGNIZED" if level == "Unrecognized" else f"{level.upper()} RISK"
     return (
-        f'<div class="grp-head"><span class="tag {cls}">{level.upper()} RISK</span>'
-        f'<span class="count">{len(group)} clause{"s" if len(group)!=1 else ""} detected</span></div>'
-        f'{cards}'
+        f'<div class="grp-head"><span class="tag {cls}">{head}</span>'
+        f'<span class="count">{len(group)} {noun}{"s" if len(group) != 1 else ""}</span></div>'
+        + "".join(render(it) for it in group)
+    )
+
+
+def summary(items, last_pill):
+    n = {lvl: sum(1 for it in items if it["risk"] == lvl) for lvl in LEVELS}
+    unk = (f'<span class="risk-pill"><span class="n pill-unk">⚪ {n["Unrecognized"]}</span> Unrecognized</span>'
+           if n["Unrecognized"] else "")
+    st.markdown(
+        '<div class="risk-summary">'
+        f'<span class="risk-pill"><span class="n pill-high">🔴 {n["High"]}</span> High risk</span>'
+        f'<span class="risk-pill"><span class="n pill-med">🟠 {n["Medium"]}</span> Medium risk</span>'
+        f'<span class="risk-pill"><span class="n pill-low">🟢 {n["Low"]}</span> Low risk</span>'
+        f'{unk}<span class="risk-pill">{last_pill}</span>'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -296,48 +357,72 @@ def risk_group(items, level):
 # Run
 # --------------------------------------------------------------------------- #
 if go and contract_text:
-    prog = st.progress(0.0, text="Model 1 scanning the contract for clauses…")
+    use_clauses = mu.clause_mode_available() and (
+        analyze_as == "🧩 Separate clauses"
+        or (analyze_as == "✨ Auto" and mu.looks_like_clause_list(contract_text)))
+    clauses = mu.split_clauses(contract_text) if use_clauses else []
+    if use_clauses and not clauses:
+        st.warning("No clauses of at least 40 characters were found; analyzing as a whole contract.")
+        use_clauses = False
+
+    prog = st.progress(0.0, text="Model 1 reading…")
 
     def _update(frac):
-        prog.progress(frac, text=f"Model 1 scanning the contract for clauses… {frac*100:.0f}%")
+        prog.progress(frac, text=f"Model 1 reading… {frac*100:.0f}%")
 
-    with st.spinner("Loading models & running inference…"):
-        mu.warm_up()
-        present, all_scores = mu.analyze(contract_text, threshold=threshold, progress=_update)
-    prog.empty()
-
-    n_high = sum(1 for it in present if it["risk"] == "High")
-    n_med  = sum(1 for it in present if it["risk"] == "Medium")
-    n_low  = sum(1 for it in present if it["risk"] == "Low")
-
-    st.markdown(
-        '<div class="risk-summary">'
-        f'<span class="risk-pill"><span class="n pill-high">🔴 {n_high}</span> High risk</span>'
-        f'<span class="risk-pill"><span class="n pill-med">🟠 {n_med}</span> Medium risk</span>'
-        f'<span class="risk-pill"><span class="n pill-low">🟢 {n_low}</span> Low risk</span>'
-        f'<span class="risk-pill">📄 {len(present)} of 41 clauses · {escape(source)}</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="sec"><span class="dot blue"></span>Risk-prioritized clauses '
-                '<span style="font-weight:500;color:var(--muted);font-size:.85rem">'
-                '— Model 1 detects, Model 2 extracts</span></div>', unsafe_allow_html=True)
-
-    if not present:
-        st.markdown('<div class="glass"><span class="empty">No categories crossed the '
-                    'threshold. Try lowering it.</span></div>', unsafe_allow_html=True)
-    else:
-        html = "".join(risk_group(present, lvl) for lvl in ("High", "Medium", "Low"))
+    if use_clauses:
+        with st.spinner("Loading models & classifying each clause…"):
+            mu.warm_up()
+            items = mu.classify_clauses(clauses, progress=_update)
+        prog.empty()
+        summary(items, f"🧩 {len(items)} clause{'s' if len(items) != 1 else ''} · {escape(source)}")
+        st.markdown('<div class="sec"><span class="dot blue"></span>Your clauses, grouped by risk '
+                    '<span style="font-weight:500;color:var(--muted);font-size:.85rem">'
+                    '— one category per clause</span></div>', unsafe_allow_html=True)
+        html = "".join(risk_group(items, lvl, clause_mode_card, "clause") for lvl in LEVELS)
         st.markdown(f'<div class="glass">{html}</div>', unsafe_allow_html=True)
-
-    with st.expander("See all 41 categories, risk level, and presence scores"):
-        rows = sorted(all_scores.items(),
-                      key=lambda kv: (mu.RISK_ORDER[mu.risk_of(kv[0])[0]], -kv[1]))
-        st.dataframe(
-            {"category": [c for c, _ in rows],
-             "risk": [mu.risk_of(c)[0] for c, _ in rows],
-             "presence score": [round(s, 3) for _, s in rows],
-             "present?": ["✅" if s >= threshold else "" for _, s in rows]},
-            use_container_width=True, hide_index=True,
-        )
+        ev = mu.clause_eval()
+        if ev:
+            st.caption(
+                f"When a clause heading names its category, the heading is used. Otherwise the model "
+                f"decides: on {ev['n_test_clauses']} held-out CUAD clauses it picked the right one of 41 "
+                f"categories {ev['calibrated_acc']:.0%} of the time (right one in its top 3: "
+                f"{ev['calibrated_top3']:.0%}; right risk level: {ev['risk_level_acc']:.0%}). "
+                f"Check model-decided cards against the clause text.")
+        with st.expander("See every clause with its category and runner-up"):
+            st.dataframe(
+                {"#": [it["index"] for it in items],
+                 "category": [it["category"] or "—" for it in items],
+                 "decided by": [it["source"] for it in items],
+                 "model's guess": [it["model_guess"] for it in items],
+                 "risk": [it["risk"] for it in items],
+                 "match score": [round(it["z"], 2) for it in items],
+                 "runner-up": [it["runner_up"] for it in items],
+                 "clause": [it["clause"][:120] for it in items]},
+                use_container_width=True, hide_index=True,
+            )
+    else:
+        with st.spinner("Loading models & running inference…"):
+            mu.warm_up()
+            present, all_scores = mu.analyze(contract_text, threshold=threshold, progress=_update)
+        prog.empty()
+        summary(present, f"📄 {len(present)} of 41 clause types · {escape(source)}")
+        st.markdown('<div class="sec"><span class="dot blue"></span>Risk-prioritized clauses '
+                    '<span style="font-weight:500;color:var(--muted);font-size:.85rem">'
+                    '— Model 1 detects, Model 2 extracts</span></div>', unsafe_allow_html=True)
+        if not present:
+            st.markdown('<div class="glass"><span class="empty">No categories crossed the '
+                        'threshold. Try lowering it.</span></div>', unsafe_allow_html=True)
+        else:
+            html = "".join(risk_group(present, lvl, doc_card, "clause type") for lvl in LEVELS[:3])
+            st.markdown(f'<div class="glass">{html}</div>', unsafe_allow_html=True)
+        with st.expander("See all 41 categories, risk level, and presence scores"):
+            rows = sorted(all_scores.items(),
+                          key=lambda kv: (mu.RISK_ORDER[mu.risk_of(kv[0])[0]], -kv[1]))
+            st.dataframe(
+                {"category": [c for c, _ in rows],
+                 "risk": [mu.risk_of(c)[0] for c, _ in rows],
+                 "presence score": [round(s, 3) for _, s in rows],
+                 "present?": ["✅" if s >= threshold else "" for _, s in rows]},
+                use_container_width=True, hide_index=True,
+            )
