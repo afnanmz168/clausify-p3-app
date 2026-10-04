@@ -210,6 +210,13 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+st.caption(
+    "⚠️ Research prototype — **not legal advice**. Risk levels are per clause *category*, scored "
+    "for the party with less bargaining power, and have not been reviewed by a lawyer. The risk "
+    "badge and category are more reliable than the quoted text, which may not be the exact clause "
+    "— read each card as \"look here\". The confidence bar is a model score, not a probability. "
+    "Only the first 30 windows (about 45,500 characters) of a contract are scanned."
+)
 
 # --------------------------------------------------------------------------- #
 # Guard
