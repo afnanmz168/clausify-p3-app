@@ -259,7 +259,7 @@ else:
 analyze_as = st.radio(
     "Analyze as",
     ["✨ Auto", "📄 Whole contract", "🧩 Separate clauses"],
-    horizontal=True,
+    horizontal=True, label_visibility="collapsed",
     help="Separate clauses: every paragraph you paste is one clause and gets exactly one "
          "category and risk level. Whole contract: the models scan the document for all 41 "
          "clause types. Auto picks Separate clauses for a short list of paragraphs.",
