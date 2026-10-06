@@ -29,7 +29,12 @@ def extract_text(name, data):
     """Return (text, note). note is a warning string or ""."""
     ext = name.lower().rsplit(".", 1)[-1]
     if ext == "txt":
-        return data.decode("utf-8", errors="ignore"), ""
+        for enc in ("utf-8-sig", "cp1252"):          # UTF-8 (with/without BOM), then Windows text
+            try:
+                return data.decode(enc), ""
+            except UnicodeDecodeError:
+                pass
+        return data.decode("latin-1"), ""             # never fails
     if ext == "pdf":
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
@@ -109,7 +114,7 @@ def results_csv(rows):
     w.writeheader()
     for r in rows:
         w.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in CSV_FIELDS})
-    return buf.getvalue().encode("utf-8")
+    return buf.getvalue().encode("utf-8-sig")       # BOM so Excel reads UTF-8 correctly
 
 
 def results_pdf(rows, missing, meta):

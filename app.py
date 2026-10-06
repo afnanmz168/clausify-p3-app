@@ -155,7 +155,7 @@ STYLE = """
   border-left:4px solid; border-radius:14px; padding:.85rem 1rem; margin:.6rem 0; }
 .clause .top{ display:flex; justify-content:space-between; align-items:center; gap:.6rem; }
 .clause .name{ font-weight:700; font-size:1rem; }
-.clause .badge2{ font-size:.72rem; font-weight:800; letter-spacing:.06em;
+.clause .badge2{ white-space:nowrap; flex-shrink:0; font-size:.72rem; font-weight:800; letter-spacing:.06em;
   padding:.22rem .6rem; border-radius:7px; }
 .clause .reason{ color:var(--muted); font-size:.86rem; margin:.35rem 0 .55rem; }
 .clause .track{ height:7px; border-radius:99px; background:rgba(255,255,255,.08); overflow:hidden; }
@@ -502,4 +502,9 @@ def render(res):
 
 
 if st.session_state.get("result"):
-    render(st.session_state["result"])
+    res = st.session_state["result"]
+    if (contract_text or "") != res["text"]:
+        st.warning("⚠️ These results are for the **previously analyzed** text "
+                   f"({escape(res['source'])}), not what is in the box now. "
+                   "Click **Analyze contract** to analyze the current text.")
+    render(res)
