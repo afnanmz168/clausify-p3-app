@@ -312,6 +312,22 @@ RULES = {
 }
 
 
+def _full_paragraph(text, para, max_len=1500):
+    """A located paragraph can start mid-word when a 2,000-char window cut it; extend it to
+    the whole paragraph of the original contract (if that stays reasonably short)."""
+    start = text.find(para)
+    if start < 0:
+        return para, -1
+    s = text.rfind("\n\n", 0, start)
+    s = 0 if s < 0 else s + 2
+    e = text.find("\n\n", start + len(para))
+    e = len(text) if e < 0 else e
+    full = text[s:e].strip()
+    if len(full) > max_len or not full:
+        return para, start
+    return full, text.find(full, s)
+
+
 def analyze(text, threshold=0.5, rule="TRANS", progress=None):
     """
     Full pipeline for one contract.
@@ -339,12 +355,13 @@ def analyze(text, threshold=0.5, rule="TRANS", progress=None):
         scores[cat] = {"transformer": pt, "tfidf": pf, "score": sc}
         if sc >= threshold:
             para, span = locate_clause(cat, best_window[cat])
+            para, start = _full_paragraph(text, para)
             level, reason = risk_of(cat)
             present.append({
                 "category": cat, "score": sc, "transformer_score": pt, "tfidf_score": pf,
                 "span_text": para,          # the located paragraph, quoted on the card
                 "highlight": span,          # span-model highlight inside it ("" if none)
-                "start": text.find(para),   # position in the contract (-1 if not found)
+                "start": start,             # position in the contract (-1 if not found)
                 "risk": level, "reason": reason,
             })
 
