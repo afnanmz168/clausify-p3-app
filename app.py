@@ -264,8 +264,7 @@ analyze_as = st.radio(
          "category and risk level. Whole contract: the models scan the document for all 41 "
          "clause types. Auto picks Separate clauses for a short list of paragraphs.",
 )
-threshold = st.slider("Presence threshold (whole-contract mode) — a category counts as PRESENT "
-                      "at or above this score", 0.10, 0.90, 0.50, 0.05)
+threshold = 0.5   # fixed decision threshold (the default used in every reported evaluation)
 go = st.button("🔍  Analyze contract", type="primary", disabled=not contract_text)
 
 # --------------------------------------------------------------------------- #
@@ -412,8 +411,8 @@ if go and contract_text:
                     '<span style="font-weight:500;color:var(--muted);font-size:.85rem">'
                     '— Model 1 detects, Model 2 extracts</span></div>', unsafe_allow_html=True)
         if not present:
-            st.markdown('<div class="glass"><span class="empty">No categories crossed the '
-                        'threshold. Try lowering it.</span></div>', unsafe_allow_html=True)
+            st.markdown('<div class="glass"><span class="empty">No clause categories were '
+                        'detected in this text.</span></div>', unsafe_allow_html=True)
         else:
             html = "".join(risk_group(present, lvl, doc_card, "clause type") for lvl in LEVELS[:3])
             st.markdown(f'<div class="glass">{html}</div>', unsafe_allow_html=True)
