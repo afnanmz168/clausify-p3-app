@@ -4,3 +4,7 @@ transformers==5.12.1
 huggingface_hub>=1.0
 streamlit==1.45.1
 numpy
+scikit-learn==1.6.1
+pypdf
+python-docx
+pymupdf

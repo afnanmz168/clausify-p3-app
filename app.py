@@ -10,11 +10,12 @@ models work on it, live:
 Run:  streamlit run app.py
 """
 
-from html import escape
+from features import escape  # HTML-escape + '$' and newline safe for st.markdown
 
 import streamlit as st
 
 import model_utils as mu
+import features as fx
 
 st.set_page_config(page_title="Clausify", page_icon="⚖️", layout="wide")
 
@@ -197,6 +198,18 @@ STYLE = """
   border-color:rgba(124,92,255,.8); box-shadow:0 8px 24px rgba(124,92,255,.35);
 }
 [data-testid="stRadio"] label > div:first-child{ display:none; }  /* hide the dot */
+
+/* plain-English line, jump link, contract view, checklist */
+.clause .pe{ margin:.45rem 0 .1rem; font-size:.9rem; color:#e9ecff; }
+.clause .pe .lbl2{ font-size:.66rem; letter-spacing:.08em; text-transform:uppercase; color:#8f9bd1; margin-right:.35rem; }
+.clause .jump{ display:inline-block; margin-top:.45rem; font-size:.78rem; color:#9fb6ff; text-decoration:none; }
+.clause .jump:hover{ text-decoration:underline; }
+.contract-view{ max-height:520px; overflow:auto; white-space:pre-wrap; line-height:1.55; font-size:.88rem;
+  padding:1rem 1.1rem; border-radius:14px; background:rgba(0,0,0,.25); border:1px solid var(--glass-brd); color:#dfe5ff; }
+.contract-view mark.hl{ border-radius:3px; padding:0 .1rem; scroll-margin-top:90px; }
+.contract-view .hl-tag{ font-size:.62rem; font-weight:700; letter-spacing:.03em; }
+.check{ display:flex; gap:.6rem; align-items:flex-start; padding:.55rem .2rem; border-bottom:1px solid rgba(255,255,255,.06); }
+.check .ic{ font-size:1rem; } .check .nm{ font-weight:700; } .check .wy{ color:var(--muted); font-size:.86rem; }
 </style>
 """
 st.markdown(STYLE, unsafe_allow_html=True)
@@ -235,7 +248,7 @@ if not mu.models_available():
     st.stop()
 
 # --------------------------------------------------------------------------- #
-# Input — two "bars" to add a contract
+# Input
 # --------------------------------------------------------------------------- #
 st.markdown('<div class="sec"><span class="dot blue"></span>Add a contract</div>',
             unsafe_allow_html=True)
@@ -251,178 +264,242 @@ if mode == "📋 Paste text":
     if pasted.strip():
         contract_text, source = pasted.strip(), "pasted text"
 else:
-    uploaded = st.file_uploader("Upload a contract file (.txt)", type=["txt"])
+    uploaded = st.file_uploader("Upload a contract — .pdf, .docx or .txt", type=["pdf", "docx", "txt"])
     if uploaded is not None:
-        contract_text = uploaded.read().decode("utf-8", errors="ignore")
-        source = f"uploaded file · {uploaded.name}"
+        try:
+            contract_text, note = fx.extract_text(uploaded.name, uploaded.getvalue())
+            contract_text = contract_text.strip()
+            source = f"uploaded file · {uploaded.name}"
+            if note:
+                st.warning(note)
+            if contract_text:
+                st.caption(f"Read {len(contract_text):,} characters from {uploaded.name}.")
+        except Exception as e:                      # corrupt or password-protected file
+            st.error(f"Could not read {uploaded.name}: {e}")
 
 analyze_as = st.radio(
     "Analyze as",
     ["✨ Auto", "📄 Whole contract", "🧩 Separate clauses"],
     horizontal=True, label_visibility="collapsed",
-    help="Separate clauses: every paragraph you paste is one clause and gets exactly one "
-         "category and risk level. Whole contract: the models scan the document for all 41 "
-         "clause types. Auto picks Separate clauses for a short list of paragraphs.",
+    help="Separate clauses: every paragraph is one clause and gets exactly one category and risk "
+         "level. Whole contract: the models scan the document for all 41 clause types. Auto picks "
+         "Separate clauses for a short list of paragraphs.",
 )
+with st.expander("⚙️ Model settings"):
+    rule_opts = ["TRANS", "AND"] if mu.baseline_available() else ["TRANS"]
+    rule = st.radio("Whole-contract detection", rule_opts, format_func=lambda r: mu.RULES[r],
+                    help="Cautious (default) misses far fewer High-risk clauses: 15.9% missed vs 36.9% for "
+                         "Balanced on the CUAD test set. Balanced is the report's headline configuration "
+                         "(highest micro-F1, 0.779, fewer false alarms), but its TF-IDF half was trained on "
+                         "full-length contracts and vetoes most clauses in short ones.")
+    use_summ = st.checkbox("Add a plain-English line to each clause (FLAN-T5 summarizer)",
+                           value=mu.summarizer_available(), disabled=not mu.summarizer_available())
 threshold = 0.5   # fixed decision threshold (the default used in every reported evaluation)
 go = st.button("🔍  Analyze contract", type="primary", disabled=not contract_text)
 
 # --------------------------------------------------------------------------- #
-# Result renderer — clauses grouped by risk (High / Medium / Low), poster-style
+# Analysis — results are kept in session state so download buttons and
+# reruns do not wipe them.
 # --------------------------------------------------------------------------- #
 _CLS = {"High": "high", "Medium": "med", "Low": "low", "Unrecognized": "unk"}
 LEVELS = ("High", "Medium", "Low", "Unrecognized")
 
 
-def card(title, risk, reason, bar_pct, bar_label, snippet_label, snippet, highlight=""):
-    cls = _CLS[risk]
-    if not snippet:
-        snip = '<span class="empty">no clean span located</span>'
+def _pct(x):
+    return "—" if x is None else f"{x*100:.0f}%"
+
+
+def run_analysis(text, src):
+    use_clauses = mu.clause_mode_available() and (
+        analyze_as == "🧩 Separate clauses"
+        or (analyze_as == "✨ Auto" and mu.looks_like_clause_list(text)))
+    clauses = mu.split_clauses(text) if use_clauses else []
+    if use_clauses and not clauses:
+        st.warning("No clauses of at least 40 characters were found; analyzing as a whole contract.")
+        use_clauses = False
+
+    prog = st.progress(0.0, text="Reading the contract…")
+    upd = lambda label: (lambda f: prog.progress(min(1.0, f), text=f"{label}… {f*100:.0f}%"))
+    with st.spinner("Loading models…"):
+        mu.warm_up()
+
+    rows = []
+    if use_clauses:
+        items = mu.classify_clauses(clauses, progress=upd("Classifying each clause"))
+        for it in items:
+            z = it["z"]
+            if it["category"] and it["source"] == "heading":
+                agree = "model agrees" if it["model_guess"] == it["category"] else f"model's own guess: {it['model_guess']}"
+                bar, label = 100, f"Category from the clause heading ({agree})"
+            elif it["category"]:
+                strength = "strong" if z >= 4 else "moderate" if z >= 2.5 else "weak"
+                bar = int(max(5, min(100, z / 6 * 100)))
+                label = f"Category match (model): {strength} (score {z:.1f}; runner-up: {it['runner_up']})"
+            else:
+                bar = int(max(5, min(100, z / 6 * 100)))
+                label = f"Closest category: {it['best_guess']} — match too weak to assign (score {z:.1f})"
+            rows.append({
+                "#": it["index"], "category": it["category"] or "Unrecognized", "risk": it["risk"],
+                "risk_reason": it["reason"], "decided_by": it["source"], "score": round(z, 2),
+                "transformer_score": round(it["presence_score"], 3), "tfidf_score": None,
+                "quoted_text": it["clause"], "quote": it["clause"], "start": text.find(it["clause"]),
+                "highlight": "", "title": f'Clause {it["index"]} · {it["category"] or "No clear category"}',
+                "label": it["category"] or "Unrecognized", "bar": bar, "bar_label": label,
+                "snippet_label": "Your clause", "score_text": label,
+            })
+        mode_name = "separate clauses"
     else:
-        pos = snippet.lower().find(highlight.lower()) if highlight else -1
-        if pos >= 0 and len(highlight) < len(snippet):
-            end = pos + len(highlight)
-            snip = (escape(snippet[:pos]) + "<mark>" + escape(snippet[pos:end]) + "</mark>"
-                    + escape(snippet[end:]))
-        else:
-            snip = escape(snippet)
-    badge = "UNRECOGNIZED" if risk == "Unrecognized" else f"{risk.upper()} RISK"
+        present, scores = mu.analyze(text, threshold=threshold, rule=rule,
+                                     progress=upd("Scanning for the 41 clause types"))
+        for k, it in enumerate(present, 1):
+            pt, pf = it["transformer_score"], it["tfidf_score"]
+            if rule == "AND":
+                label = f"Ensemble score {_pct(it['score'])} (DistilBERT {_pct(pt)}, TF-IDF {_pct(pf)})"
+            else:
+                label = f"DistilBERT score {_pct(pt)} (TF-IDF {_pct(pf)}, not used for detection)"
+            rows.append({
+                "#": k, "category": it["category"], "risk": it["risk"], "risk_reason": it["reason"],
+                "decided_by": "AND-ensemble" if rule == "AND" else "DistilBERT", "score": round(it["score"], 3),
+                "transformer_score": round(pt, 3), "tfidf_score": None if pf is None else round(pf, 3),
+                "quoted_text": it["span_text"], "quote": it["span_text"], "start": it["start"],
+                "highlight": it["highlight"], "title": it["category"], "label": it["category"],
+                "bar": round(it["score"] * 100), "bar_label": label, "score_text": label,
+                "snippet_label": "Located clause · DistilBERT picks the paragraph, the span model highlights the key phrase",
+            })
+        mode_name = "whole contract · " + ("AND-ensemble" if rule == "AND" else "DistilBERT alone")
+
+    if use_summ and rows:
+        summaries = mu.summarize([r["quote"] for r in rows], progress=upd("Writing plain-English lines"))
+        for r, s in zip(rows, summaries):
+            r["plain_english"] = s
+            sc = mu.summary_category(s)
+            if sc and r["risk"] != "Unrecognized" and sc != r["category"]:
+                r["summary_mismatch"] = sc      # the summarizer read this text as a different category
+    prog.empty()
+
+    found = [r["category"] for r in rows if r["risk"] != "Unrecognized"]
+    st.session_state["result"] = {
+        "rows": rows, "text": text, "source": src, "mode": mode_name,
+        "clause_mode": use_clauses, "missing": mu.missing_protections(found),
+    }
+
+
+if go and contract_text:
+    run_analysis(contract_text, source)
+
+# --------------------------------------------------------------------------- #
+# Rendering
+# --------------------------------------------------------------------------- #
+def card(r, anchor):
+    cls = _CLS[r["risk"]]
+    snippet = r["quote"] if len(r["quote"]) <= 700 else r["quote"][:700] + "…"
+    hl = r.get("highlight", "")
+    pos = snippet.lower().find(hl.lower()) if hl else -1
+    if pos >= 0 and len(hl) < len(snippet):
+        end = pos + len(hl)
+        snip = escape(snippet[:pos]) + "<mark>" + escape(snippet[pos:end]) + "</mark>" + escape(snippet[end:])
+    else:
+        snip = escape(snippet) if snippet else '<span class="empty">no clean span located</span>'
+    badge = "UNRECOGNIZED" if r["risk"] == "Unrecognized" else f"{r['risk'].upper()} RISK"
+    pe = ""
+    if r.get("plain_english"):
+        warn = (f'<div class="conf">⚠️ The summarizer read this text as <b>{escape(r["summary_mismatch"])}</b>, '
+                f'not {escape(r["category"])} — treat this line with caution.</div>' if r.get("summary_mismatch") else "")
+        pe = f'<div class="pe"><span class="lbl2">In plain English · FLAN-T5</span>{escape(r["plain_english"])}</div>{warn}'
+    jump = f'<a class="jump" href="#{anchor}">↧ Show in contract</a>' if anchor else ""
     return (
         f'<div class="clause {cls}">'
-        f'  <div class="top"><span class="name">{escape(title)}</span>'
+        f'  <div class="top"><span class="name">{escape(r["title"])}</span>'
         f'    <span class="badge2 {cls}">{badge}</span></div>'
-        f'  <div class="reason">{escape(reason)}</div>'
-        f'  <div class="track"><div class="fill" style="width:{bar_pct}%"></div></div>'
-        f'  <div class="conf">{escape(bar_label)}</div>'
-        f'  <div class="snippet"><span class="lbl">{escape(snippet_label)}</span>“{snip}”</div>'
+        f'  <div class="reason">{escape(r["risk_reason"])}</div>{pe}'
+        f'  <div class="track"><div class="fill" style="width:{r["bar"]}%"></div></div>'
+        f'  <div class="conf">{escape(r["bar_label"])}</div>'
+        f'  <div class="snippet"><span class="lbl">{escape(r["snippet_label"])}</span>“{snip}”</div>{jump}'
         f'</div>'
     )
 
 
-def doc_card(it):
-    pct = round(it["presence_score"] * 100)
-    text = it["span_text"] if len(it["span_text"]) <= 700 else it["span_text"][:700] + "…"
-    return card(it["category"], it["risk"], it["reason"], pct,
-                f"Model 1 · presence score {pct}%",
-                "Located clause · Model 1 picks the paragraph, Model 2 highlights the key span",
-                text, it.get("highlight", ""))
-
-
-def clause_mode_card(it):
-    z = it["z"]
-    strength = "strong" if z >= 4 else "moderate" if z >= 2.5 else "weak"
-    pct = int(max(5, min(100, z / 6 * 100)))
-    title = f'Clause {it["index"]} · {it["category"] or "No clear category"}'
-    if it["category"] and it["source"] == "heading":
-        pct = 100
-        agree = "model agrees" if it["model_guess"] == it["category"] else f"model's own guess: {it['model_guess']}"
-        label = f"Category from the clause heading ({agree})"
-    else:
-        label = None
-    label = label or (f"Category match (model): {strength} (score {z:.1f}; runner-up: {it['runner_up']})"
-             if it["category"] else f"Closest category: {it['best_guess']} — match too weak to assign (score {z:.1f})")
-    text = it["clause"] if len(it["clause"]) <= 600 else it["clause"][:600] + "…"
-    return card(title, it["risk"], it["reason"], pct, label, "Your clause", text)
-
-
-def risk_group(items, level, render, noun):
-    group = [it for it in items if it["risk"] == level]
-    if not group:
-        return ""
-    cls = _CLS[level]
-    head = "UNRECOGNIZED" if level == "Unrecognized" else f"{level.upper()} RISK"
-    return (
-        f'<div class="grp-head"><span class="tag {cls}">{head}</span>'
-        f'<span class="count">{len(group)} {noun}{"s" if len(group) != 1 else ""}</span></div>'
-        + "".join(render(it) for it in group)
-    )
-
-
-def summary(items, last_pill):
-    n = {lvl: sum(1 for it in items if it["risk"] == lvl) for lvl in LEVELS}
+def render(res):
+    rows, text = res["rows"], res["text"]
+    n = {lvl: sum(1 for r in rows if r["risk"] == lvl) for lvl in LEVELS}
     unk = (f'<span class="risk-pill"><span class="n pill-unk">⚪ {n["Unrecognized"]}</span> Unrecognized</span>'
            if n["Unrecognized"] else "")
+    count = (f"🧩 {len(rows)} clause{'s' if len(rows) != 1 else ''}" if res["clause_mode"]
+             else f"📄 {len(rows)} of 41 clause types")
     st.markdown(
         '<div class="risk-summary">'
         f'<span class="risk-pill"><span class="n pill-high">🔴 {n["High"]}</span> High risk</span>'
         f'<span class="risk-pill"><span class="n pill-med">🟠 {n["Medium"]}</span> Medium risk</span>'
         f'<span class="risk-pill"><span class="n pill-low">🟢 {n["Low"]}</span> Low risk</span>'
-        f'{unk}<span class="risk-pill">{last_pill}</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+        f'{unk}<span class="risk-pill">{count} · {escape(res["source"])}</span></div>',
+        unsafe_allow_html=True)
 
-
-# --------------------------------------------------------------------------- #
-# Run
-# --------------------------------------------------------------------------- #
-if go and contract_text:
-    use_clauses = mu.clause_mode_available() and (
-        analyze_as == "🧩 Separate clauses"
-        or (analyze_as == "✨ Auto" and mu.looks_like_clause_list(contract_text)))
-    clauses = mu.split_clauses(contract_text) if use_clauses else []
-    if use_clauses and not clauses:
-        st.warning("No clauses of at least 40 characters were found; analyzing as a whole contract.")
-        use_clauses = False
-
-    prog = st.progress(0.0, text="Model 1 reading…")
-
-    def _update(frac):
-        prog.progress(frac, text=f"Model 1 reading… {frac*100:.0f}%")
-
-    if use_clauses:
-        with st.spinner("Loading models & classifying each clause…"):
-            mu.warm_up()
-            items = mu.classify_clauses(clauses, progress=_update)
-        prog.empty()
-        summary(items, f"🧩 {len(items)} clause{'s' if len(items) != 1 else ''} · {escape(source)}")
-        st.markdown('<div class="sec"><span class="dot blue"></span>Your clauses, grouped by risk '
-                    '<span style="font-weight:500;color:var(--muted);font-size:.85rem">'
-                    '— one category per clause</span></div>', unsafe_allow_html=True)
-        html = "".join(risk_group(items, lvl, clause_mode_card, "clause") for lvl in LEVELS)
+    # ---- risk cards
+    st.markdown('<div class="sec"><span class="dot blue"></span>Clauses, grouped by risk '
+                f'<span style="font-weight:500;color:var(--muted);font-size:.85rem">— {escape(res["mode"])}</span></div>',
+                unsafe_allow_html=True)
+    anc = fx.anchors(text, rows)
+    if not rows:
+        st.markdown('<div class="glass"><span class="empty">No clause categories were detected '
+                    'in this text.</span></div>', unsafe_allow_html=True)
+    else:
+        html = ""
+        for lvl in LEVELS:
+            group = [r for r in rows if r["risk"] == lvl]
+            if group:
+                head = "UNRECOGNIZED" if lvl == "Unrecognized" else f"{lvl.upper()} RISK"
+                noun = "clause" if res["clause_mode"] else "clause type"
+                html += (f'<div class="grp-head"><span class="tag {_CLS[lvl]}">{head}</span>'
+                         f'<span class="count">{len(group)} {noun}{"s" if len(group) != 1 else ""}</span></div>'
+                         + "".join(card(r, anc.get(id(r))) for r in group))
         st.markdown(f'<div class="glass">{html}</div>', unsafe_allow_html=True)
+    if res["clause_mode"]:
         ev = mu.clause_eval()
         if ev:
             st.caption(
                 f"When a clause heading names its category, the heading is used. Otherwise the model "
                 f"decides: on {ev['n_test_clauses']} held-out CUAD clauses it picked the right one of 41 "
                 f"categories {ev['calibrated_acc']:.0%} of the time (right one in its top 3: "
-                f"{ev['calibrated_top3']:.0%}; right risk level: {ev['risk_level_acc']:.0%}). "
-                f"Check model-decided cards against the clause text.")
-        with st.expander("See every clause with its category and runner-up"):
-            st.dataframe(
-                {"#": [it["index"] for it in items],
-                 "category": [it["category"] or "—" for it in items],
-                 "decided by": [it["source"] for it in items],
-                 "model's guess": [it["model_guess"] for it in items],
-                 "risk": [it["risk"] for it in items],
-                 "match score": [round(it["z"], 2) for it in items],
-                 "runner-up": [it["runner_up"] for it in items],
-                 "clause": [it["clause"][:120] for it in items]},
-                use_container_width=True, hide_index=True,
-            )
-    else:
-        with st.spinner("Loading models & running inference…"):
-            mu.warm_up()
-            present, all_scores = mu.analyze(contract_text, threshold=threshold, progress=_update)
-        prog.empty()
-        summary(present, f"📄 {len(present)} of 41 clause types · {escape(source)}")
-        st.markdown('<div class="sec"><span class="dot blue"></span>Risk-prioritized clauses '
-                    '<span style="font-weight:500;color:var(--muted);font-size:.85rem">'
-                    '— Model 1 detects, Model 2 extracts</span></div>', unsafe_allow_html=True)
-        if not present:
-            st.markdown('<div class="glass"><span class="empty">No clause categories were '
-                        'detected in this text.</span></div>', unsafe_allow_html=True)
-        else:
-            html = "".join(risk_group(present, lvl, doc_card, "clause type") for lvl in LEVELS[:3])
-            st.markdown(f'<div class="glass">{html}</div>', unsafe_allow_html=True)
-        with st.expander("See all 41 categories, risk level, and presence scores"):
-            rows = sorted(all_scores.items(),
-                          key=lambda kv: (mu.RISK_ORDER[mu.risk_of(kv[0])[0]], -kv[1]))
-            st.dataframe(
-                {"category": [c for c, _ in rows],
-                 "risk": [mu.risk_of(c)[0] for c, _ in rows],
-                 "presence score": [round(s, 3) for _, s in rows],
-                 "present?": ["✅" if s >= threshold else "" for _, s in rows]},
-                use_container_width=True, hide_index=True,
-            )
+                f"{ev['calibrated_top3']:.0%}; right risk level: {ev['risk_level_acc']:.0%}).")
+    if any(r.get("plain_english") for r in rows):
+        st.caption("The plain-English lines come from the fine-tuned FLAN-T5 summarizer. As the project "
+                   "report shows, it describes the clause's category in one sentence rather than "
+                   "summarizing its exact wording.")
+
+    # ---- highlighted contract
+    st.markdown('<div class="sec"><span class="dot blue"></span>Your contract, highlighted by risk</div>',
+                unsafe_allow_html=True)
+    st.markdown(f'<div class="contract-view">{fx.highlighted_html(text, rows)}</div>', unsafe_allow_html=True)
+
+    # ---- missing-protection checklist
+    st.markdown('<div class="sec"><span class="dot blue"></span>Missing-protection checklist</div>',
+                unsafe_allow_html=True)
+    found = {r["category"] for r in rows}
+    items_html = ""
+    for c, why, needs in mu.PROTECTIONS:
+        if needs and needs not in found:
+            continue
+        ok = c in found
+        items_html += (f'<div class="check"><span class="ic">{"✅" if ok else "⚠️"}</span><div>'
+                       f'<div class="nm">{escape(c)} — {"found" if ok else "not detected"}</div>'
+                       + ("" if ok else f'<div class="wy">{escape(why)}</div>') + '</div></div>')
+    st.markdown(f'<div class="glass">{items_html}</div>', unsafe_allow_html=True)
+    st.caption("“Not detected” means the models did not find it — they can miss clauses, so check the "
+               "contract before relying on a missing item.")
+
+    # ---- downloadable report
+    st.markdown('<div class="sec"><span class="dot blue"></span>Download the report</div>',
+                unsafe_allow_html=True)
+    stem = "clausify_report"
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇️  PDF report", fx.results_pdf(rows, res["missing"], res),
+                           file_name=f"{stem}.pdf", mime="application/pdf",
+                           use_container_width=True, on_click="ignore")
+    with c2:
+        st.download_button("⬇️  CSV (spreadsheet)", fx.results_csv(rows), file_name=f"{stem}.csv",
+                           mime="text/csv", use_container_width=True, on_click="ignore")
+
+
+if st.session_state.get("result"):
+    render(st.session_state["result"])

@@ -54,7 +54,7 @@ def _resolve_models_dir():
             return d
     try:
         from huggingface_hub import snapshot_download
-        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "span/*"])
+        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "span/*", "summarizer/*", "baseline/*"])
     except Exception:            # offline / repo missing: app.py shows a clear error
         return os.environ.get("CUAD_MODELS_DIR", os.path.join(BASE, "models"))
 
@@ -62,6 +62,11 @@ def _resolve_models_dir():
 MODELS_DIR = _resolve_models_dir()
 PRESENCE_DIR = os.path.join(MODELS_DIR, "presence_mil", "final")
 SPAN_DIR = os.path.join(MODELS_DIR, "span", "final")
+SUMMARIZER_DIR = os.path.join(MODELS_DIR, "summarizer", "final")
+# TF-IDF baseline: "baseline/baseline.pkl" in the Hub repo, or the training artifacts folder locally.
+BASELINE_PATH = next((p for p in (os.path.join(MODELS_DIR, "baseline", "baseline.pkl"),
+                                  os.path.join(os.path.dirname(MODELS_DIR), "artifacts", "baseline.pkl"))
+                      if os.path.exists(p)), os.path.join(MODELS_DIR, "baseline", "baseline.pkl"))
 
 DEVICE = "cpu"
 
@@ -166,6 +171,10 @@ def warm_up():
     """Load both models so the first analysis isn't slow."""
     _load_presence()
     _load_span()
+    if baseline_available():
+        _load_baseline()
+    if summarizer_available():
+        _load_summarizer()
 
 
 def make_windows(text):
@@ -297,34 +306,155 @@ def locate_clause(category, window):
     return para, span if span and span.lower() in para.lower() else ""
 
 
-def analyze(text, threshold=0.5, progress=None):
+RULES = {
+    "AND": "Balanced — AND-ensemble (TF-IDF and DistilBERT must agree)",
+    "TRANS": "Cautious — DistilBERT alone (catches more High-risk clauses)",
+}
+
+
+def analyze(text, threshold=0.5, rule="TRANS", progress=None):
     """
     Full pipeline for one contract.
 
-    Returns a list of dicts (one per PRESENT category), sorted by confidence:
-        {category, presence_score, span_text, span_conf}
-    plus the raw presence scores for every category.
-    """
-    scores, best_window = predict_presence(text, progress=progress)
+    rule "AND"  : a category is present when min(TF-IDF, DistilBERT) >= threshold
+                  (the report's headline configuration, micro-F1 0.779);
+    rule "TRANS": DistilBERT max-pooled score alone (higher High-risk recall).
+    Falls back to "TRANS" if the TF-IDF baseline is not available.
 
-    present = []
-    for cat, sc in scores.items():
+    Returns (present, scores):
+        present  list of dicts, one per present category, sorted High -> Low then by score:
+                 {category, score, transformer_score, tfidf_score, span_text, highlight,
+                  start, risk, reason}
+        scores   {category: {"transformer": p, "tfidf": p or None, "score": p}}
+    """
+    trans, best_window = predict_presence(text, progress=progress)
+    tfidf = tfidf_scores(text) if baseline_available() else {}
+    if rule == "AND" and not tfidf:
+        rule = "TRANS"
+
+    scores, present = {}, []
+    for cat, pt in trans.items():
+        pf = tfidf.get(cat)
+        sc = min(pt, pf) if rule == "AND" else pt
+        scores[cat] = {"transformer": pt, "tfidf": pf, "score": sc}
         if sc >= threshold:
             para, span = locate_clause(cat, best_window[cat])
             level, reason = risk_of(cat)
             present.append({
-                "category": cat,
-                "presence_score": sc,
+                "category": cat, "score": sc, "transformer_score": pt, "tfidf_score": pf,
                 "span_text": para,          # the located paragraph, quoted on the card
                 "highlight": span,          # span-model highlight inside it ("" if none)
-                "risk": level,
-                "reason": reason,
+                "start": text.find(para),   # position in the contract (-1 if not found)
+                "risk": level, "reason": reason,
             })
 
-    # sort by risk (High → Low), then by confidence within a risk band
-    present.sort(key=lambda d: (RISK_ORDER[d["risk"]], -d["presence_score"]))
+    # sort by risk (High → Low), then by score within a risk band
+    present.sort(key=lambda d: (RISK_ORDER[d["risk"]], -d["score"]))
     return present, scores
 
+
+# --------------------------------------------------------------------------- #
+# TF-IDF + logistic-regression baseline (document level, one classifier per
+# category) — the lexical half of the AND-ensemble.
+# --------------------------------------------------------------------------- #
+def baseline_available():
+    return os.path.exists(BASELINE_PATH)
+
+
+@functools.lru_cache(maxsize=1)
+def _load_baseline():
+    import pickle
+    with open(BASELINE_PATH, "rb") as f:
+        return pickle.load(f)
+
+
+def tfidf_scores(text):
+    """{category: probability the category is present} from the full-document TF-IDF model."""
+    bl = _load_baseline()
+    X = bl["vec"].transform([text])
+    out = {}
+    for cat in CATEGORIES:
+        kind, obj = bl["classifiers"][cat]
+        out[cat] = float(obj) if kind == "const" else float(obj.predict_proba(X)[0, 1])
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Summarizer — fine-tuned FLAN-T5-small. The report (Section 5.1) shows it maps
+# a clause to one of 41 category-level plain-English sentences rather than
+# summarizing the specific wording; the app labels its output accordingly.
+# --------------------------------------------------------------------------- #
+def summarizer_available():
+    return os.path.exists(os.path.join(SUMMARIZER_DIR, "config.json"))
+
+
+@functools.lru_cache(maxsize=1)
+def _load_summarizer():
+    from transformers import AutoModelForSeq2SeqLM
+    tok = AutoTokenizer.from_pretrained(SUMMARIZER_DIR)
+    model = AutoModelForSeq2SeqLM.from_pretrained(SUMMARIZER_DIR).to(DEVICE).eval()
+    return tok, model
+
+
+_TEMPLATES_PATH = os.path.join(BASE, "summarizer_templates.json")
+
+
+@functools.lru_cache(maxsize=1)
+def _template_to_category():
+    """The summarizer was trained on 41 category sentences; map each back to its category."""
+    try:
+        t = json.load(open(_TEMPLATES_PATH))
+    except OSError:
+        return {}
+    return {_norm_sentence(v): k for k, v in t.items()}
+
+
+def _norm_sentence(s):
+    return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+
+
+def summary_category(sentence):
+    """Category whose training sentence the summarizer reproduced, or None if it wrote something else."""
+    return _template_to_category().get(_norm_sentence(sentence))
+
+
+def summarize(texts, progress=None, batch=8):
+    """One plain-English sentence per input clause (same prompt and decoding as the test)."""
+    tok, model = _load_summarizer()
+    out = []
+    for i in range(0, len(texts), batch):
+        chunk = [f"summarize in plain English: {t[:1200]}" for t in texts[i:i + batch]]
+        enc = tok(chunk, return_tensors="pt", truncation=True, max_length=256, padding=True).to(DEVICE)
+        with torch.no_grad():
+            gen = model.generate(**enc, max_new_tokens=48, num_beams=2)
+        out.extend(tok.decode(g, skip_special_tokens=True).strip() for g in gen)
+        if progress is not None:
+            progress(min(1.0, (i + batch) / len(texts)))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Missing-protection checklist. What a contract does NOT contain can matter to
+# the weaker party as much as what it does. Each entry: category, why its
+# absence matters, and (optionally) a category that must be present for the
+# check to apply. Absence means "not detected" — the models can miss clauses.
+# --------------------------------------------------------------------------- #
+PROTECTIONS = [
+    ("Cap On Liability", "Without a liability cap, the amount you could owe for a breach may have no upper limit.", None),
+    ("Termination For Convenience", "Without it, you may have no way to exit the contract early if it stops working for you.", None),
+    ("Governing Law", "Without a governing-law clause, it is unclear whose law decides a dispute, which can make one costly.", None),
+    ("Expiration Date", "No clear end date — check how long the obligations actually last.", None),
+    ("Warranty Duration", "No stated warranty period — it may be unclear how long you are protected against defects.", None),
+    ("Insurance", "No insurance requirement — losses may not be covered by anyone's policy.", None),
+    ("Notice Period To Terminate Renewal", "The contract renews, but no notice period to stop the renewal was detected — you may be locked in.", "Renewal Term"),
+]
+
+
+def missing_protections(found_categories):
+    found = set(found_categories)
+    return [{"category": c, "why": why, "risk_if_missing": "check"}
+            for c, why, needs in PROTECTIONS
+            if c not in found and (needs is None or needs in found)]
 
 # --------------------------------------------------------------------------- #
 # Clause mode — the user pastes a list of separate clauses and expects one
