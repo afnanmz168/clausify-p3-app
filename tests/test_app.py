@@ -70,6 +70,16 @@ check("clause mode: every card links to a highlight", p["links"] == 9 and p["lin
 check("clause mode: $ escaped", not p["raw_dollar"])
 check("clause mode: PDF + CSV downloads", len(p["downloads"]) == 2, p["downloads"])
 
+# 1b. a contract of 18 numbered clauses + title, preamble and signature line -> 18 cards --
+DEMO18 = open(os.path.expanduser("~/Desktop/final project p3/demo_clause.txt")).read()
+at = run_app(DEMO18, analyze_as="🧩 Separate clauses"); p = page(at)
+titles = re.findall(r'<span class="name">([^<]+)</span>', p["md"])
+check("18 numbered clauses -> exactly 18 cards", p["cards"] == 18, f'{p["cards"]} cards, {p["pills"]}')
+check("cards use the contract's own numbers", "Clause 1 · License Grant" in titles and "Clause 18 · Expiration Date" in titles, titles[:2])
+check("title / preamble / signature listed as skipped", any("3 paragraphs not analyzed" in e.label for e in at.expander), [e.label for e in at.expander])
+p = page(run_app(DEMO18))
+check("auto mode on the same text -> 18 clause cards", p["cards"] == 18, p["cards"])
+
 # 2. whole contract, default (DistilBERT) and ensemble, summaries off ------------------
 p = page(run_app(DEMO, analyze_as="📄 Whole contract"))
 check("whole contract: no exceptions", not p["exceptions"], p["exceptions"])

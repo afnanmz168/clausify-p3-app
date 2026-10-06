@@ -509,15 +509,49 @@ def clause_mode_available():
     return os.path.exists(_CAL_PATH)
 
 
-def split_clauses(text):
-    """Split pasted text into clauses: blank-line separated paragraphs, or, if the
-    text has no blank lines, lines that start a numbered item (1. / 2) / (a) ...)."""
+_NUMBERED = re.compile(
+    r"^\s*(?:"
+    r"(?:section|article|clause)\s+(?P<a>\d+(?:\.\d+)*|[ivxlc]+)[\.\):]?"   # Section 5 / Article IV
+    r"|(?P<b>\d+(?:\.\d+)+)[\.\)]?"                                   # 4.2  4.2.  1.3.1
+    r"|(?P<e>\d+)[\.\)]"                                                # 1.  3)
+    r"|\((?P<c>[a-z0-9]{1,4})\)"                                         # (a)  (iv)  (12)
+    r"|(?P<d>[ivxlc]{1,6})[\.\)]"                                         # IV.  ii)
+    r")\s", re.IGNORECASE)
+
+
+def clause_number(paragraph):
+    """The paragraph's own clause number ("1", "4.2", "a", "IV"), or None if it is not numbered."""
+    m = _NUMBERED.match(paragraph)
+    return next((g for g in m.groups() if g), None) if m else None
+
+
+def split_clauses_detailed(text):
+    """
+    Split pasted text into clauses: blank-line separated paragraphs, or, if the text has
+    no blank lines, lines that start a numbered item (1. / 2) / (a) ...).
+
+    When most paragraphs are numbered clauses, the un-numbered ones (title, preamble,
+    recitals, signature block) are not clauses: they are returned separately as skipped.
+    Returns (clauses, skipped).
+    """
     text = text.replace("\r\n", "\n").strip()
     parts = [p.strip() for p in re.split(r"\n\s*\n", text)]
     if len(parts) == 1:
         parts = [p.strip() for p in
                  re.split(r"\n(?=\s*(?:\d+[\.\)]|\([a-z0-9]+\)|[a-z][\.\)])\s)", text)]
-    return [p for p in parts if len(p) >= MIN_CLAUSE_CHARS]
+    parts = [p for p in parts if p]
+    numbered = [p for p in parts if clause_number(p)]
+    if len(numbered) >= 2 and len(numbered) >= 0.5 * len(parts):
+        clauses = [p for p in numbered if len(p) >= MIN_CLAUSE_CHARS]
+        skipped = [p for p in parts if not clause_number(p)]
+    else:
+        clauses = [p for p in parts if len(p) >= MIN_CLAUSE_CHARS]
+        skipped = []
+    return clauses, skipped
+
+
+def split_clauses(text):
+    return split_clauses_detailed(text)[0]
 
 
 def looks_like_clause_list(text):
@@ -595,7 +629,8 @@ def classify_clauses(clauses, progress=None):
             cat, source = (CATEGORIES[best], "model") if z[best] >= z_cut else (None, "model")
         level, reason = risk_of(cat) if cat else ("Unrecognized", "No clause category stands out clearly — review manually.")
         out.append({
-            "index": i + 1, "clause": cl, "category": cat, "risk": level, "reason": reason,
+            "index": i + 1, "number": clause_number(cl) or str(i + 1),
+            "clause": cl, "category": cat, "risk": level, "reason": reason,
             "source": source, "model_guess": CATEGORIES[best],
             "z": float(z[best]), "presence_score": float(prob[best]),
             "best_guess": CATEGORIES[best], "runner_up": CATEGORIES[second],

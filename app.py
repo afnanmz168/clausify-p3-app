@@ -313,7 +313,7 @@ def run_analysis(text, src):
     use_clauses = mu.clause_mode_available() and (
         analyze_as == "🧩 Separate clauses"
         or (analyze_as == "✨ Auto" and mu.looks_like_clause_list(text)))
-    clauses = mu.split_clauses(text) if use_clauses else []
+    clauses, skipped = mu.split_clauses_detailed(text) if use_clauses else ([], [])
     if use_clauses and not clauses:
         st.warning("No clauses of at least 40 characters were found; analyzing as a whole contract.")
         use_clauses = False
@@ -339,11 +339,11 @@ def run_analysis(text, src):
                 bar = int(max(5, min(100, z / 6 * 100)))
                 label = f"Closest category: {it['best_guess']} — match too weak to assign (score {z:.1f})"
             rows.append({
-                "#": it["index"], "category": it["category"] or "Unrecognized", "risk": it["risk"],
+                "#": it["number"], "category": it["category"] or "Unrecognized", "risk": it["risk"],
                 "risk_reason": it["reason"], "decided_by": it["source"], "score": round(z, 2),
                 "transformer_score": round(it["presence_score"], 3), "tfidf_score": None,
                 "quoted_text": it["clause"], "quote": it["clause"], "start": text.find(it["clause"]),
-                "highlight": "", "title": f'Clause {it["index"]} · {it["category"] or "No clear category"}',
+                "highlight": "", "title": f'Clause {it["number"]} · {it["category"] or "No clear category"}',
                 "label": it["category"] or "Unrecognized", "bar": bar, "bar_label": label,
                 "snippet_label": "Your clause", "score_text": label,
             })
@@ -381,6 +381,7 @@ def run_analysis(text, src):
     st.session_state["result"] = {
         "rows": rows, "text": text, "source": src, "mode": mode_name,
         "clause_mode": use_clauses, "missing": mu.missing_protections(found),
+        "skipped": skipped if use_clauses else [],
     }
 
 
@@ -453,6 +454,13 @@ def render(res):
                          f'<span class="count">{len(group)} {noun}{"s" if len(group) != 1 else ""}</span></div>'
                          + "".join(card(r, anc.get(id(r))) for r in group))
         st.markdown(f'<div class="glass">{html}</div>', unsafe_allow_html=True)
+    if res.get("skipped"):
+        with st.expander(f"{len(res['skipped'])} paragraph{'s' if len(res['skipped']) != 1 else ''} "
+                         "not analyzed as clauses (title, preamble, signature block…)"):
+            st.caption("Your text is made of numbered clauses, so only the numbered paragraphs are "
+                       "analyzed. These un-numbered paragraphs were skipped:")
+            for p in res["skipped"]:
+                st.markdown(f"- {escape(p[:200])}{'…' if len(p) > 200 else ''}", unsafe_allow_html=True)
     if res["clause_mode"]:
         ev = mu.clause_eval()
         if ev:
