@@ -1,0 +1,55 @@
+# Clausify app tests, run 2026-10-09 16:30 +06 on macOS 26.6.2, Python 3.13.5
+# code: commit c48ae23 plus the uncommitted changes that are committed together with this log
+# models: /Users/afnanmazumder/Desktop/final project p3/notebooks/outputs | presence v2: True | span v2: True
+# command: python3 tests/test_app.py   (warnings and progress bars removed from this log)
+
+[PASS] clause mode: no exceptions  []
+[PASS] clause mode: 9 cards, 3/3/3  {'🔴': 3, '🟠': 3, '🟢': 3} 6s
+[PASS] clause mode: plain-English line per card  9
+[PASS] clause mode: every card links to a highlight  (9, 9)
+[PASS] clause mode: $ escaped  
+[PASS] clause mode: PDF + CSV downloads  ['⬇️  PDF report', '⬇️  CSV (spreadsheet)']
+[PASS] 18 numbered clauses -> exactly 18 cards  18 cards, {'🔴': 8, '🟠': 6, '🟢': 4}
+[PASS] cards use the contract's own numbers  ['Clause 2 · Exclusivity', 'Clause 3 · Minimum Commitment']
+[PASS] title / preamble / signature listed as skipped  ['⚙️ Model settings', '3 paragraphs not analyzed as clauses (title, preamble, signature block…)']
+[PASS] auto mode on the same text -> 18 clause cards  18
+[PASS] whole contract: no exceptions  []
+[PASS] whole contract: 27 types, 5 High  {'🔴': 5, '🟠': 13, '🟢': 9}
+[PASS] whole contract: links resolve to highlights  (13, 13)
+[PASS] whole contract: $ escaped  
+[PASS] whole contract: says which rule decided  
+[PASS] whole contract: cards under 50% chance marked Possible — check, the rest not  4 of 27 possible
+[PASS] Balanced ensemble: runs  []
+[PASS] Balanced ensemble: fewer detections than recall-first  {'🔴': 1, '🟠': 5, '🟢': 6}
+[PASS] summaries off: no plain-English lines  0
+[PASS] Recall-first ensemble: runs  {'🔴': 3, '🟠': 11, '🟢': 8}
+[PASS] decision file: recall-first is micro-F2, balanced is micro-F1 AND  ({'RECALL': ('f2', 'transformer'), 'RECALL_ENS': ('f2', 'ensemble'), 'BALANCED': ('f1', 'ensemble')}, 'AND', 'AVG')
+[PASS] calibration map: monotone and within 0-1  (0.08450704225352113, 0.276657060518732, 0.99)
+[PASS] decision file: a threshold for every category  
+[PASS] auto on full contract -> whole-contract mode  
+[PASS] stale results flagged after editing input  ['⚠️ These results are for the **previously analyzed** text (p']
+[PASS] no stale warning when input matches  
+[PASS] tiny input: no crash  []
+[PASS] tiny input in clause mode: warns and falls back  ['No clauses of at least 40 characters were found; analyzing as a whole contract.']
+[PASS] special chars: no crash  []
+[PASS] special chars: HTML escaped  
+[PASS] special chars: $ escaped  
+[PASS] numbered lines without blank lines: 9 clauses  9
+[PASS] longest CUAD contract: no crash  338,211 chars, 81s, {'🔴': 5, '🟠': 12, '🟢': 9}
+[PASS] docx extraction  7032
+[PASS] pdf extraction  2989
+[PASS] image-only pdf: warns  Very little text could be read from this PDF. It may be a sc
+invalid pdf header: b'not a'
+EOF marker not found
+[PASS] corrupt pdf: raises (app shows error)  
+[PASS] Windows (cp1252) txt keeps accents  'Café clause — £100'
+[PASS] UTF-8 BOM stripped  'Governing law clause'
+[PASS] PDF report with no clauses  94353
+[PASS] PDF report with special chars  4114780
+[PASS] CSV has a status column  #,category,risk,status,risk_reason,plain_english,summary_mis
+[PASS] CSV has Excel BOM and keeps unicode  #,category,risk,status,risk_reason,plain_english,summary_mismatch,decided_by,sco
+[PASS] checklist: renewal without notice period is flagged  
+[PASS] checklist: notice period not flagged without renewal  
+
+45/45 checks passed
+exit code: 0

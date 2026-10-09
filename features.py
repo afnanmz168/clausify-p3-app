@@ -104,7 +104,7 @@ def highlighted_html(text, items, max_chars=60000):
 # --------------------------------------------------------------------------- #
 # 3. Downloadable report
 # --------------------------------------------------------------------------- #
-CSV_FIELDS = ["#", "category", "risk", "risk_reason", "plain_english", "summary_mismatch", "decided_by",
+CSV_FIELDS = ["#", "category", "risk", "status", "risk_reason", "plain_english", "summary_mismatch", "decided_by",
               "score", "transformer_score", "tfidf_score", "quoted_text"]
 
 
@@ -132,7 +132,8 @@ def results_pdf(rows, missing, meta):
         cards.append(
             f'<div class="card" style="border-left:4px solid {c}">'
             f'<p class="h"><b>{escape(str(r["#"]))}. {escape(r["category"])}</b> '
-            f'<span style="color:{c}"><b>{r["risk"].upper()}</b></span></p>'
+            f'<span style="color:{c}"><b>{r["risk"].upper()}</b></span>'
+            f'{" · <b>POSSIBLE — CHECK</b>" if r.get("possible") else ""}</p>'
             f'<p class="why">{escape(r.get("risk_reason", ""))}</p>{extra}{scores}'
             f'<p class="q">“{escape(r.get("quoted_text", "")[:900])}”</p></div>')
     miss = "".join(f"<li><b>{escape(m['category'])}</b> — {escape(m['why'])}</li>" for m in missing) \
@@ -142,7 +143,8 @@ def results_pdf(rows, missing, meta):
     <p class="meta">{escape(meta['source'])} · {escape(meta['mode'])} · generated {datetime.now():%Y-%m-%d %H:%M}</p>
     <p class="warn">Research prototype — not legal advice. Risk levels are per clause category, scored for the
     party with less bargaining power. Models can miss clauses and
-    quote the wrong text; scores are model scores, not probabilities.</p>
+    quote the wrong text. The chance shown is calibrated on held-out CUAD contracts; clauses marked
+    Possible — check have less than a 50% chance of being present.</p>
     <p><b>Summary:</b> {counts['High']} High · {counts['Medium']} Medium · {counts['Low']} Low
     {f"· {counts['Unrecognized']} Unrecognized" if counts['Unrecognized'] else ""}</p>
     <h2>Clauses, highest risk first</h2>{''.join(cards) or '<p>No clauses detected.</p>'}

@@ -89,6 +89,11 @@ check("whole contract: 27 types, 5 High", sum(p["pills"].values()) == 27 and p["
 check("whole contract: links resolve to highlights", p["link_targets_ok"], (p["links"], p["anchors"]))
 check("whole contract: $ escaped", not p["raw_dollar"])
 check("whole contract: says which rule decided", "Recall-first DistilBERT" in p["md"], "")
+cards = re.findall(r'<div class="clause \w+( possible)?">.*?About (\d+)% chance', p["md"])
+check("whole contract: cards under 50% chance marked Possible — check, the rest not",
+      cards and all((pct <= 50) if flag else (pct >= 50) for flag, pct in ((bool(f), int(x)) for f, x in cards))
+      and p["md"].count("POSSIBLE — CHECK") == sum(1 for f, _ in cards if f),
+      f'{sum(1 for f, _ in cards if f)} of {len(cards)} possible')
 p = page(run_app(DEMO, analyze_as="📄 Whole contract", rule="BALANCED", summaries=False))
 check("Balanced ensemble: runs", not p["exceptions"], p["exceptions"])
 check("Balanced ensemble: fewer detections than recall-first", 0 < sum(p["pills"].values()) < 27, p["pills"])
@@ -171,6 +176,7 @@ row = {"#": 1, "category": "Governing Law", "risk": "Low", "risk_reason": "r", "
 pdf = fx.results_pdf([row], [], {"source": "x", "mode": "y"})
 check("PDF report with special chars", pdf[:4] == b"%PDF", len(pdf))
 csv_bytes = fx.results_csv([row]); csv_text = csv_bytes.decode("utf-8-sig")
+check("CSV has a status column", csv_text.splitlines()[0].split(",")[3] == "status", csv_text.splitlines()[0][:60])
 check("CSV has Excel BOM and keeps unicode", csv_bytes[:3] == b"\xef\xbb\xbf" and "中文" in csv_text and csv_text.count("\n") == 2, csv_text[:80])
 
 # 8. checklist logic ---------------------------------------------------------------------

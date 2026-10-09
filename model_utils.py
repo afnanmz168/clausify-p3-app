@@ -54,7 +54,7 @@ def _resolve_models_dir():
             return d
     try:
         from huggingface_hub import snapshot_download
-        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "presence_v2/*", "span/*",
+        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "presence_v2/*", "span/*", "span_v2/*",
                                                           "summarizer/*", "baseline/*", "baseline_v2/*"])
     except Exception:            # offline / repo missing: app.py shows a clear error
         return os.environ.get("CUAD_MODELS_DIR", os.path.join(BASE, "models"))
@@ -63,6 +63,12 @@ def _resolve_models_dir():
 MODELS_DIR = _resolve_models_dir()
 PRESENCE_DIR = os.path.join(MODELS_DIR, "presence_mil", "final")
 SPAN_DIR = os.path.join(MODELS_DIR, "span", "final")
+# Retrained span model (report Section 5.2.1): trained on the same 1,200-character chunks it reads at
+# run time, with the answer anywhere in the chunk or absent. span_v2.json holds the decoding and the
+# way the quote is chosen, both picked on the 81 validation contracts. Without it, the first model.
+SPAN_V2_DIR = os.path.join(MODELS_DIR, "span_v2", "final")
+_SPAN_V2_CFG = os.path.join(BASE, "span_v2.json")
+SPAN_V2 = json.load(open(_SPAN_V2_CFG)) if os.path.exists(_SPAN_V2_CFG) else None
 SUMMARIZER_DIR = os.path.join(MODELS_DIR, "summarizer", "final")
 # TF-IDF baseline: "baseline/baseline.pkl" in the Hub repo, or the training artifacts folder locally.
 BASELINE_PATH = next((p for p in (os.path.join(MODELS_DIR, "baseline", "baseline.pkl"),
@@ -82,6 +88,14 @@ with open(os.path.join(BASE, "decision_v2.json")) as f:
 # 81 validation contracts (test-set ECE 0.206 -> 0.016). Written by downstream_v2.py.
 with open(os.path.join(BASE, "calibration_v2.json")) as f:
     _CALIB_V2 = json.load(f)
+
+
+# A card whose calibrated chance is below this is labelled "Possible — check" and shown apart from the
+# others. The recall-first thresholds are set per clause type, the calibration map is shared, so some
+# types are reported at a chance well under 50%: on the 102 test contracts 728 of the default setting's
+# 1,963 cards (37%) fall below it. Only 30% of those are real clauses, but they include 46 of the 159
+# High-risk clauses found, so they are flagged rather than dropped.
+POSSIBLE_BELOW = 0.5
 
 
 def calibrated(p):
@@ -191,10 +205,15 @@ def _presence_maxlen(version):
     return PRESENCE_V2_MAXLEN if version == "v2" else PRESENCE_MAXLEN
 
 
-@functools.lru_cache(maxsize=1)
-def _load_span():
-    tok = AutoTokenizer.from_pretrained(SPAN_DIR)
-    model = AutoModelForQuestionAnswering.from_pretrained(SPAN_DIR)
+def span_v2_available():
+    return SPAN_V2 is not None and os.path.exists(os.path.join(SPAN_V2_DIR, "config.json"))
+
+
+@functools.lru_cache(maxsize=2)
+def _load_span(version="v1"):
+    d = SPAN_V2_DIR if version == "v2" else SPAN_DIR
+    tok = AutoTokenizer.from_pretrained(d)
+    model = AutoModelForQuestionAnswering.from_pretrained(d)
     model.to(DEVICE).eval()
     return tok, model
 
@@ -208,7 +227,7 @@ def warm_up():
         _load_presence()
         if baseline_available():
             _load_baseline()
-    _load_span()
+    _load_span("v2" if span_v2_available() else "v1")
     if summarizer_available():
         _load_summarizer()
 
@@ -269,7 +288,7 @@ def extract_span(question, window):
 
     Returns: (span_text, confidence)
     """
-    tok, model = _load_span()
+    tok, model = _load_span("v1")
     best_text, best_conf = "", -1.0
 
     starts = list(range(0, max(1, len(window) - 300), FOCUS - 300)) or [0]
@@ -308,6 +327,49 @@ def extract_span(question, window):
     return best_text, best_conf
 
 
+def _chunk_starts(n, size, stride):
+    s = list(range(0, max(1, n - size + 1), stride))
+    if s[-1] + size < n:
+        s.append(n - size)
+    return s
+
+
+def extract_span_v2(question, text):
+    """
+    Retrained span model, read exactly as in training and in the report's test: chunks of
+    span_v2.json["chunk"] characters every ["stride"], the answer scored as start + end logit
+    (minus the chunk's "no answer" score if ["rule"] is "minus_null"), at most ["max_answer_tokens"].
+
+    Returns: (answer text as written in `text`, start offset, end offset, score); ("", -1, -1, -inf)
+    for empty text.
+    """
+    cfg = SPAN_V2
+    tok, model = _load_span("v2")
+    if not text.strip():
+        return "", -1, -1, float("-inf")
+    cs = _chunk_starts(len(text), cfg["chunk"], cfg["stride"])
+    chunks = [text[a:a + cfg["chunk"]] for a in cs]
+    enc = tok([question] * len(chunks), chunks, truncation="only_second", max_length=cfg["max_len"],
+              padding=True, return_offsets_mapping=True, return_tensors="pt")
+    off = enc.pop("offset_mapping").numpy()
+    with torch.no_grad():
+        out = model(**enc.to(DEVICE))
+    sl, el = out.start_logits.cpu().numpy(), out.end_logits.cpu().numpy()
+    best = ("", -1, -1, float("-inf"))
+    for k in range(len(chunks)):
+        ctx = np.array([x == 1 for x in enc.sequence_ids(k)])
+        s = int(np.argmax(np.where(ctx, sl[k], -1e9)))
+        pos = np.arange(len(ctx))
+        e = int(np.argmax(np.where(ctx & (pos >= s) & (pos <= s + cfg["max_answer_tokens"]), el[k], -1e18)))
+        score = float(sl[k][s] + el[k][e])
+        if cfg["rule"] == "minus_null":
+            score -= float(sl[k][0] + el[k][0])
+        if score > best[3]:
+            a, b = int(off[k][s][0]) + cs[k], int(off[k][e][1]) + cs[k]
+            best = (text[a:b].strip(), a, b, score)
+    return best
+
+
 def _paragraphs(text, max_len=700):
     """Split a window into paragraphs; long paragraphs are split into sentences."""
     out = []
@@ -331,14 +393,24 @@ def locate_clause(category, window, version="v1"):
 
     Returns: (paragraph, highlighted_span)
     """
-    tok, model = _load_presence(version)
-    paras = _paragraphs(window)
     q = CAT_QUESTIONS[category]
+    paras = _paragraphs(window)
+    if span_v2_available() and SPAN_V2["quote"] == "span_paragraph":
+        # the retrained span model finds the clause in the window; quote the paragraph around it
+        span, a, _, _ = extract_span_v2(q, window)
+        pos = [window.find(p) for p in paras]
+        hit = [p for p, st in zip(paras, pos) if 0 <= st <= a < st + len(p)]
+        para = hit[0] if hit else min(zip(paras, pos), key=lambda x: abs(x[1] - a))[0]
+        return para, span if span and span in para else ""
+    tok, model = _load_presence(version)
     enc = tok([q] * len(paras), paras, truncation=True, max_length=_presence_maxlen(version),
               padding=True, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
         lg = model(**enc).logits
     para = paras[int((lg[:, 1] - lg[:, 0]).argmax())]
+    if span_v2_available():
+        span = extract_span_v2(q, para)[0]
+        return para, span if span and span in para else ""
     span, _ = extract_span(q, para)
     return para, span if span and span.lower() in para.lower() else ""
 
@@ -414,8 +486,9 @@ def analyze(text, threshold=0.5, rule=None, progress=None):
 
     Returns (present, scores):
         present  list of dicts, one per present category, sorted High -> Low then by score:
-                 {category, score, threshold, transformer_score, tfidf_score, span_text,
-                  highlight, start, risk, reason}
+                 {category, score, threshold, transformer_score, tfidf_score, chance, possible,
+                  span_text, highlight, start, risk, reason}
+                 possible: the calibrated chance is under POSSIBLE_BELOW (shown as "Possible — check")
         scores   {category: {"transformer": p, "tfidf": p or None, "score": p}}
     """
     rule = rule or default_rule()
@@ -443,9 +516,10 @@ def analyze(text, threshold=0.5, rule=None, progress=None):
             para, span = locate_clause(cat, best_window[cat], version)
             para, start = _full_paragraph(text, para)
             level, reason = risk_of(cat)
+            chance = calibrated(pt) if version == "v2" else None
             present.append({
                 "category": cat, "score": sc, "threshold": thr, "transformer_score": pt, "tfidf_score": pf,
-                "chance": calibrated(pt) if version == "v2" else None,
+                "chance": chance, "possible": chance is not None and chance < POSSIBLE_BELOW,
                 "span_text": para,          # the located paragraph, quoted on the card
                 "highlight": span,          # span-model highlight inside it ("" if none)
                 "start": start,             # position in the contract (-1 if not found)

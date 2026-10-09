@@ -1,0 +1,10 @@
+{
+ "chunk": 1200,
+ "stride": 800,
+ "max_len": 384,
+ "rule": "minus_null",
+ "max_answer_tokens": 120,
+ "quote": "span_paragraph",
+ "chosen_on": "81 validation contracts (retrain/span_v2/evaluate_span.py)",
+ "epoch": 2
+}

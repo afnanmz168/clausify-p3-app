@@ -167,6 +167,11 @@ STYLE = """
 .clause .snippet .lbl{ display:block; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase;
   color:#7f8bbd; margin-bottom:.25rem; }
 
+.clause.possible{ border-left-style:dashed; background:rgba(255,255,255,.025); }
+.clause .maybe{ font-size:.68rem; font-weight:800; letter-spacing:.06em; padding:.18rem .5rem;
+  border-radius:7px; background:rgba(138,147,184,.2); color:#d3d8ee; margin-right:.35rem; white-space:nowrap; }
+.grp-sub{ color:var(--muted); font-size:.84rem; font-weight:600; margin:.9rem 0 .2rem .2rem; }
+
 /* risk colors */
 .high{  --c:#ff5a7a; }  .med{ --c:#f7b955; }  .low{ --c:#34d399; }
 .clause.high{ border-left-color:#ff5a7a; }
@@ -231,7 +236,8 @@ st.caption(
     "for the party with less bargaining power. The risk "
     "badge and category are more reliable than the quoted text, which may not be the exact clause "
     "— read each card as \"look here\". Each bar shows the chance that the clause type is present, "
-    "calibrated on held-out CUAD contracts; on contracts unlike CUAD's it is only a guide. "
+    "calibrated on held-out CUAD contracts; on contracts unlike CUAD's it is only a guide. Cards under "
+    "50% are marked **Possible — check** and listed after the others in their risk group. "
     "Only the first 30 windows (about 45,500 characters) of a contract are scanned."
 )
 
@@ -317,6 +323,11 @@ def _pct(x):
     return "—" if x is None else f"{x*100:.0f}%"
 
 
+QUOTE_LABEL = ("Located clause · the span model finds the clause and highlights it; its paragraph is quoted"
+               if mu.span_v2_available() and mu.SPAN_V2["quote"] == "span_paragraph"
+               else "Located clause · DistilBERT picks the paragraph, the span model highlights the key phrase")
+
+
 def run_analysis(text, src):
     use_clauses = mu.clause_mode_available() and (
         analyze_as == "🧩 Separate clauses"
@@ -364,6 +375,7 @@ def run_analysis(text, src):
                       "AND": "AND-ensemble (original)", "TRANS": "DistilBERT (original)"}[rule]
         for k, it in enumerate(present, 1):
             pt, pf = it["transformer_score"], it["tfidf_score"]
+            maybe = "Possible — check. " if it.get("possible") else ""
             if rule == "RECALL":
                 label = (f"About {_pct(it['chance'])} chance this clause type is present "
                          f"(DistilBERT score {_pct(pt)}, above the {_pct(it['threshold'])} set for this type)")
@@ -383,8 +395,9 @@ def run_analysis(text, src):
                 "quoted_text": it["span_text"], "quote": it["span_text"], "start": it["start"],
                 "highlight": it["highlight"], "title": it["category"], "label": it["category"],
                 "bar": round((it["chance"] if it.get("chance") is not None else it["score"]) * 100),
-                "bar_label": label, "score_text": label,
-                "snippet_label": "Located clause · DistilBERT picks the paragraph, the span model highlights the key phrase",
+                "bar_label": maybe + label, "score_text": maybe + label,
+                "possible": bool(it.get("possible")), "status": "Possible — check" if it.get("possible") else "Found",
+                "snippet_label": QUOTE_LABEL,
             })
         mode_name = "whole contract · " + decided_by
 
@@ -428,10 +441,11 @@ def card(r, anchor):
                 f'not {escape(r["category"])} — treat this line with caution.</div>' if r.get("summary_mismatch") else "")
         pe = f'<div class="pe"><span class="lbl2">In plain English · FLAN-T5</span>{escape(r["plain_english"])}</div>{warn}'
     jump = f'<a class="jump" href="#{anchor}">↧ Show in contract</a>' if anchor else ""
+    maybe = '<span class="maybe">POSSIBLE — CHECK</span>' if r.get("possible") else ""
     return (
-        f'<div class="clause {cls}">'
+        f'<div class="clause {cls}{" possible" if r.get("possible") else ""}">'
         f'  <div class="top"><span class="name">{escape(r["title"])}</span>'
-        f'    <span class="badge2 {cls}">{badge}</span></div>'
+        f'    <span>{maybe}<span class="badge2 {cls}">{badge}</span></span></div>'
         f'  <div class="reason">{escape(r["risk_reason"])}</div>{pe}'
         f'  <div class="track"><div class="fill" style="width:{r["bar"]}%"></div></div>'
         f'  <div class="conf">{escape(r["bar_label"])}</div>'
@@ -443,15 +457,17 @@ def card(r, anchor):
 def render(res):
     rows, text = res["rows"], res["text"]
     n = {lvl: sum(1 for r in rows if r["risk"] == lvl) for lvl in LEVELS}
+    m = {lvl: sum(1 for r in rows if r["risk"] == lvl and r.get("possible")) for lvl in LEVELS}
+    of = lambda lvl: f' <span style="color:var(--muted);font-weight:600">({m[lvl]} possible)</span>' if m[lvl] else ""
     unk = (f'<span class="risk-pill"><span class="n pill-unk">⚪ {n["Unrecognized"]}</span> Unrecognized</span>'
            if n["Unrecognized"] else "")
     count = (f"🧩 {len(rows)} clause{'s' if len(rows) != 1 else ''}" if res["clause_mode"]
              else f"📄 {len(rows)} of 41 clause types")
     st.markdown(
         '<div class="risk-summary">'
-        f'<span class="risk-pill"><span class="n pill-high">🔴 {n["High"]}</span> High risk</span>'
-        f'<span class="risk-pill"><span class="n pill-med">🟠 {n["Medium"]}</span> Medium risk</span>'
-        f'<span class="risk-pill"><span class="n pill-low">🟢 {n["Low"]}</span> Low risk</span>'
+        f'<span class="risk-pill"><span class="n pill-high">🔴 {n["High"]}</span> High risk{of("High")}</span>'
+        f'<span class="risk-pill"><span class="n pill-med">🟠 {n["Medium"]}</span> Medium risk{of("Medium")}</span>'
+        f'<span class="risk-pill"><span class="n pill-low">🟢 {n["Low"]}</span> Low risk{of("Low")}</span>'
         f'{unk}<span class="risk-pill">{count} · {escape(res["source"])}</span></div>',
         unsafe_allow_html=True)
 
@@ -470,9 +486,14 @@ def render(res):
             if group:
                 head = "UNRECOGNIZED" if lvl == "Unrecognized" else f"{lvl.upper()} RISK"
                 noun = "clause" if res["clause_mode"] else "clause type"
+                sure = [r for r in group if not r.get("possible")]
+                maybe = [r for r in group if r.get("possible")]
                 html += (f'<div class="grp-head"><span class="tag {_CLS[lvl]}">{head}</span>'
                          f'<span class="count">{len(group)} {noun}{"s" if len(group) != 1 else ""}</span></div>'
-                         + "".join(card(r, anc.get(id(r))) for r in group))
+                         + "".join(card(r, anc.get(id(r))) for r in sure))
+                if maybe:
+                    html += (f'<div class="grp-sub">Possible — check · {len(maybe)} with less than a 50% '
+                             f'chance of being present</div>' + "".join(card(r, anc.get(id(r))) for r in maybe))
         st.markdown(f'<div class="glass">{html}</div>', unsafe_allow_html=True)
     if res.get("skipped"):
         with st.expander(f"{len(res['skipped'])} paragraph{'s' if len(res['skipped']) != 1 else ''} "
