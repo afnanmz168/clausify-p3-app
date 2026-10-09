@@ -228,9 +228,10 @@ st.markdown(
 )
 st.caption(
     "⚠️ Research prototype — **not legal advice**. Risk levels are per clause *category*, scored "
-    "for the party with less bargaining power, and have not been reviewed by a lawyer. The risk "
+    "for the party with less bargaining power. The risk "
     "badge and category are more reliable than the quoted text, which may not be the exact clause "
-    "— read each card as \"look here\". Scores and bars are model scores, not probabilities. "
+    "— read each card as \"look here\". Each bar shows the chance that the clause type is present, "
+    "calibrated on held-out CUAD contracts; on contracts unlike CUAD's it is only a guide. "
     "Only the first 30 windows (about 45,500 characters) of a contract are scanned."
 )
 
@@ -364,8 +365,8 @@ def run_analysis(text, src):
         for k, it in enumerate(present, 1):
             pt, pf = it["transformer_score"], it["tfidf_score"]
             if rule == "RECALL":
-                label = (f"DistilBERT score {_pct(pt)}, above the {_pct(it['threshold'])} set for this "
-                         f"clause type (TF-IDF {_pct(pf)}, not used for detection)")
+                label = (f"About {_pct(it['chance'])} chance this clause type is present "
+                         f"(DistilBERT score {_pct(pt)}, above the {_pct(it['threshold'])} set for this type)")
             elif rule == "RECALL_ENS":
                 label = (f"Combined score {_pct(it['score'])}, above the {_pct(it['threshold'])} set for this "
                          f"clause type (DistilBERT {_pct(pt)}, TF-IDF {_pct(pf)})")
@@ -381,7 +382,8 @@ def run_analysis(text, src):
                 "transformer_score": round(pt, 3), "tfidf_score": None if pf is None else round(pf, 3),
                 "quoted_text": it["span_text"], "quote": it["span_text"], "start": it["start"],
                 "highlight": it["highlight"], "title": it["category"], "label": it["category"],
-                "bar": round(it["score"] * 100), "bar_label": label, "score_text": label,
+                "bar": round((it["chance"] if it.get("chance") is not None else it["score"]) * 100),
+                "bar_label": label, "score_text": label,
                 "snippet_label": "Located clause · DistilBERT picks the paragraph, the span model highlights the key phrase",
             })
         mode_name = "whole contract · " + decided_by

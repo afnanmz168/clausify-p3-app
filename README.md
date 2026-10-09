@@ -28,6 +28,10 @@ clause and a plain-English line.
 | Setting | Rule | On the test set |
 |---|---|---|
 | Recall-first (default) | DistilBERT score ≥ its per-type threshold | 90.3% of High-risk clauses found (17 of 176 missed), micro-F1 0.757 |
+
+Each card's bar shows a calibrated chance that the clause type is present (isotonic map fitted on the
+81 validation contracts; test-set calibration error 0.016), shown between 1% and 99%. Clause mode picks
+the right one of 41 categories for 44.9% of held-out CUAD clauses (`clause_calibration_v2.json`).
 | Recall-first ensemble | average of DistilBERT and TF-IDF ≥ per-type threshold | 86.9% found, micro-F1 0.783; TF-IDF scores short contracts too low |
 | Balanced | both models above their own thresholds | micro-F1 0.809, but only 54.0% of High-risk clauses found |
 
@@ -58,8 +62,8 @@ In order: the `CUAD_MODELS_DIR` folder, a `models/` folder here, the sibling
 (default `af123Af/clausify-models`). The folder needs:
 
 ```
-presence_v2/final/      re-run presence model (512 tokens)         ← default detection
-presence_mil/final/     first-setup presence model (256 tokens)    ← clause mode, and fallback
+presence_v2/final/      re-run presence model (512 tokens)         ← detection and clause mode
+presence_mil/final/     first-setup presence model (256 tokens)    ← fallback only
 span/final/             span model
 summarizer/final/       FLAN-T5 summarizer
 ```
@@ -71,4 +75,4 @@ falls back to the first setup's models and says so in the settings panel.
 ---
 
 *Research prototype, not legal advice. Risk levels are per clause category, judged for the party with
-less bargaining power, and have not been reviewed by a lawyer.*
+less bargaining power.*

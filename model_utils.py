@@ -78,6 +78,16 @@ BASELINE_V2_PATH = next((p for p in (os.path.join(MODELS_DIR, "baseline_v2", "ba
                          if os.path.exists(p)), os.path.join(MODELS_DIR, "baseline_v2", "baseline.pkl"))
 with open(os.path.join(BASE, "decision_v2.json")) as f:
     DECISION_V2 = json.load(f)
+# Isotonic map from the re-run transformer's max-pooled score to a calibrated chance, fitted on the
+# 81 validation contracts (test-set ECE 0.206 -> 0.016). Written by downstream_v2.py.
+with open(os.path.join(BASE, "calibration_v2.json")) as f:
+    _CALIB_V2 = json.load(f)
+
+
+def calibrated(p):
+    """Calibrated chance that a clause type is present, from the re-run transformer's score.
+    Shown between 1% and 99%: no single prediction is certain, whatever the map says."""
+    return float(min(0.99, max(0.01, np.interp(p, _CALIB_V2["x"], _CALIB_V2["y"]))))
 
 DEVICE = "cpu"
 
@@ -435,6 +445,7 @@ def analyze(text, threshold=0.5, rule=None, progress=None):
             level, reason = risk_of(cat)
             present.append({
                 "category": cat, "score": sc, "threshold": thr, "transformer_score": pt, "tfidf_score": pf,
+                "chance": calibrated(pt) if version == "v2" else None,
                 "span_text": para,          # the located paragraph, quoted on the card
                 "highlight": span,          # span-model highlight inside it ("" if none)
                 "start": start,             # position in the contract (-1 if not found)
@@ -560,15 +571,25 @@ def missing_protections(found_categories):
 # the training split; see calibrate_clause_mode.py), and the clause gets the
 # category with the highest standardized score.
 # --------------------------------------------------------------------------- #
-_CAL_PATH = os.path.join(BASE, "clause_calibration.json")
+_CAL_PATH = os.path.join(BASE, "clause_calibration.json")             # first-setup model
+_CAL_V2_PATH = os.path.join(BASE, "clause_calibration_v2.json")       # re-run model (44.9% vs 42.3%)
 MIN_CLAUSE_CHARS = 40          # shorter fragments (titles, signature lines) are skipped
 AUTO_MAX_CLAUSES = 25          # auto mode: at most this many paragraphs ...
 AUTO_MAX_CHARS = 12000         # ... and this much text to be treated as a clause list
 
 
-@functools.lru_cache(maxsize=1)
-def _calibration():
-    cal = json.load(open(_CAL_PATH))
+def _clause_version():
+    """Clause mode uses the re-run model when its files and calibration are present."""
+    return "v2" if v2_available() and os.path.exists(_CAL_V2_PATH) else "v1"
+
+
+def _clause_cal_path():
+    return _CAL_V2_PATH if _clause_version() == "v2" else _CAL_PATH
+
+
+@functools.lru_cache(maxsize=2)
+def _calibration(path=None):
+    cal = json.load(open(path or _clause_cal_path()))
     assert cal["categories"] == CATEGORIES, "calibration was built for a different category order"
     return np.array(cal["neg_mean"]), np.array(cal["neg_std"]), float(cal["unrecognized_below_z"])
 
@@ -576,13 +597,13 @@ def _calibration():
 def clause_eval():
     """Held-out accuracy of the model-only clause classifier (from the calibration run)."""
     try:
-        return json.load(open(_CAL_PATH))["eval"]
+        return json.load(open(_clause_cal_path()))["eval"]
     except (OSError, KeyError, ValueError):
         return None
 
 
 def clause_mode_available():
-    return os.path.exists(_CAL_PATH)
+    return os.path.exists(_clause_cal_path())
 
 
 _NUMBERED = re.compile(
@@ -684,12 +705,13 @@ def classify_clauses(clauses, progress=None):
     source is "heading" when the clause heading names the category, else "model".
     category is None (risk "Unrecognized") when no category stands out.
     """
-    tok, model = _load_presence()
-    mean, std, z_cut = _calibration()
+    version = _clause_version()
+    tok, model = _load_presence(version)
+    mean, std, z_cut = _calibration(_clause_cal_path())
     qs = [CAT_QUESTIONS[c] for c in CATEGORIES]
     out = []
     for i, cl in enumerate(clauses):
-        enc = tok(qs, [cl] * len(qs), truncation=True, max_length=PRESENCE_MAXLEN,
+        enc = tok(qs, [cl] * len(qs), truncation=True, max_length=_presence_maxlen(version),
                   padding=True, return_tensors="pt").to(DEVICE)
         with torch.no_grad():
             lg = model(**enc).logits

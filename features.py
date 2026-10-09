@@ -141,7 +141,7 @@ def results_pdf(rows, missing, meta):
     <h1>Clausify — contract risk report</h1>
     <p class="meta">{escape(meta['source'])} · {escape(meta['mode'])} · generated {datetime.now():%Y-%m-%d %H:%M}</p>
     <p class="warn">Research prototype — not legal advice. Risk levels are per clause category, scored for the
-    party with less bargaining power, and have not been reviewed by a lawyer. Models can miss clauses and
+    party with less bargaining power. Models can miss clauses and
     quote the wrong text; scores are model scores, not probabilities.</p>
     <p><b>Summary:</b> {counts['High']} High · {counts['Medium']} Medium · {counts['Low']} Low
     {f"· {counts['Unrecognized']} Unrecognized" if counts['Unrecognized'] else ""}</p>

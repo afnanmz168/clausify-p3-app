@@ -101,6 +101,9 @@ dec = mu.DECISION_V2["objectives"]
 check("decision file: recall-first is micro-F2, balanced is micro-F1 AND",
       mu.V2_RULES["RECALL"] == ("f2", "transformer") and dec["f1"]["rule"] == "AND" and dec["f2"]["rule"] == "AVG",
       (mu.V2_RULES, dec["f1"]["rule"], dec["f2"]["rule"]))
+check("calibration map: monotone and within 0-1",
+      0.0 <= mu.calibrated(0.2) <= mu.calibrated(0.9) <= mu.calibrated(0.999) <= 1.0,
+      (mu.calibrated(0.2), mu.calibrated(0.9), mu.calibrated(0.999)))
 check("decision file: a threshold for every category",
       all(set(dec[o][k]) == set(mu.CATEGORIES) for o in dec for k in ("t_tfidf", "t_transformer", "t_avg")))
 
