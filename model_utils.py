@@ -54,7 +54,7 @@ def _resolve_models_dir():
             return d
     try:
         from huggingface_hub import snapshot_download
-        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "presence_v2/*", "span/*", "span_v2/*",
+        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "presence_v2/*", "span/*", "span_v2/*", "clause_v2/*",
                                                           "summarizer/*", "baseline/*", "baseline_v2/*"])
     except Exception:            # offline / repo missing: app.py shows a clear error
         return os.environ.get("CUAD_MODELS_DIR", os.path.join(BASE, "models"))
@@ -107,7 +107,13 @@ DEVICE = "cpu"
 
 # Windowing — identical to the notebook (2000-char windows, 1500 stride).
 WIN, STRIDE = 2000, 1500
-MAX_WINDOWS = 30          # cap for very long contracts (keeps the demo snappy)
+MAX_WINDOWS = 30          # every clause type reads the first 30 windows (keeps the app fast)
+# Version 2: in longer contracts, the TF-IDF model picks this many of the later windows for each clause
+# type, and the presence model reads those too. Chosen on the 81 validation contracts (smallest number
+# whose micro-F2 is within 0.005 of reading every window); on the test contracts the default setting
+# then finds 88.6% of High-risk clauses, against 77.3% with the first 30 windows alone and 90.3% with
+# every window (final project p3/retrain/v2_fullwindow/window_cap.py).
+EXTRA_WINDOWS = 5
 PRESENCE_MAXLEN = 256
 PRESENCE_V2_MAXLEN = DECISION_V2["max_len"]
 SPAN_MAXLEN = 320
@@ -232,21 +238,42 @@ def warm_up():
         _load_summarizer()
 
 
-def make_windows(text):
-    """Slide 2000-char windows with 1500 stride over the contract."""
+def all_windows(text):
+    """Slide 2000-char windows with 1500 stride over the whole contract."""
     wins, pos = [], 0
     while pos < len(text):
         wins.append(text[pos:pos + WIN])
         if pos + WIN >= len(text):
             break
         pos += STRIDE
-    wins = wins or [text]
-    return wins[:MAX_WINDOWS]
+    return wins or [text]
+
+
+def make_windows(text):
+    """The first MAX_WINDOWS windows, which every clause type reads."""
+    return all_windows(text)[:MAX_WINDOWS]
+
+
+def _extra_windows(later, version):
+    """{category: indices into `later`}: the EXTRA_WINDOWS windows after the first MAX_WINDOWS that the
+    re-run TF-IDF model, applied to each window alone, rates most likely to contain that category.
+    Ties (and the constant categories) keep document order, exactly as in window_cap.py."""
+    if version != "v2" or not later or EXTRA_WINDOWS <= 0:
+        return {}
+    bl = _load_baseline("v2")
+    X = bl["vec"].transform(later)
+    out = {}
+    for cat in CATEGORIES:
+        kind, obj = bl["classifiers"][cat]
+        s = np.zeros(len(later)) if kind == "const" else obj.predict_proba(X)[:, 1]
+        out[cat] = [int(i) for i in np.argsort(-s, kind="stable")[:EXTRA_WINDOWS]]
+    return out
 
 
 def predict_presence(text, progress=None, version="v1"):
     """
-    For every category, max-pool the window-level classifier over all windows.
+    For every category, max-pool the window-level classifier over the windows it reads: the first
+    MAX_WINDOWS, plus (version 2, long contracts) the EXTRA_WINDOWS later ones the TF-IDF model picks.
 
     Returns:
         scores       {category: max probability the clause is present}
@@ -254,12 +281,15 @@ def predict_presence(text, progress=None, version="v1"):
     """
     tok, model = _load_presence(version)
     maxlen = _presence_maxlen(version)
-    wins = make_windows(text)
+    allw = all_windows(text)
+    first, later = allw[:MAX_WINDOWS], allw[MAX_WINDOWS:]
+    extra = _extra_windows(later, version)
     scores, best_window = {}, {}
     n = len(CATEGORIES)
 
     for ci, cat in enumerate(CATEGORIES):
         q = CAT_QUESTIONS[cat]
+        wins = first + [later[i] for i in extra.get(cat, [])]
         win_scores = []
         for i in range(0, len(wins), 16):
             batch = wins[i:i + 16]
@@ -652,6 +682,51 @@ AUTO_MAX_CLAUSES = 25          # auto mode: at most this many paragraphs ...
 AUTO_MAX_CHARS = 12000         # ... and this much text to be treated as a clause list
 
 
+# Clause mode, current version: a classifier trained for "which of the 41 types is this clause?", with
+# a 42nd class, "none", for paragraphs that are no annotated clause (final project p3/retrain/clause_v2).
+# clause_v2.json names the model chosen on the validation contracts and holds its test accuracy; the
+# weights live in MODELS_DIR/clause_v2/ (final/ for DistilBERT, tfidf.pkl for the word model). Without
+# them, clause mode falls back to the presence model's standardized scores below.
+_CLAUSE_V2_CFG = os.path.join(BASE, "clause_v2.json")
+CLAUSE_V2 = json.load(open(_CLAUSE_V2_CFG)) if os.path.exists(_CLAUSE_V2_CFG) else None
+CLAUSE_V2_DIR = os.path.join(MODELS_DIR, "clause_v2")
+
+
+def clause_v2_available():
+    if not CLAUSE_V2:
+        return False
+    kind = CLAUSE_V2["model"]
+    need = ([os.path.join(CLAUSE_V2_DIR, "final", "config.json")] if kind in ("bert", "average") else []) + \
+           ([os.path.join(CLAUSE_V2_DIR, "tfidf.pkl")] if kind in ("tfidf", "average") else [])
+    return all(os.path.exists(p) for p in need)
+
+
+@functools.lru_cache(maxsize=1)
+def _load_clause_v2():
+    import pickle
+    kind, m = CLAUSE_V2["model"], {}
+    if kind in ("bert", "average"):
+        d = os.path.join(CLAUSE_V2_DIR, "final")
+        m["tok"] = AutoTokenizer.from_pretrained(d)
+        m["bert"] = AutoModelForSequenceClassification.from_pretrained(d).to(DEVICE).eval()
+    if kind in ("tfidf", "average"):
+        with open(os.path.join(CLAUSE_V2_DIR, "tfidf.pkl"), "rb") as f:
+            m["tfidf"] = pickle.load(f)
+    return m
+
+
+def clause_probs(texts):
+    """[len(texts), 42] probabilities over CLAUSE_V2["labels"] (the 41 categories, then "none")."""
+    m, kind, parts = _load_clause_v2(), CLAUSE_V2["model"], []
+    if "bert" in m:
+        enc = m["tok"](texts, truncation=True, max_length=256, padding=True, return_tensors="pt").to(DEVICE)
+        with torch.no_grad():
+            parts.append(F.softmax(m["bert"](**enc).logits.float(), dim=-1).cpu().numpy())
+    if "tfidf" in m:
+        parts.append(m["tfidf"]["clf"].predict_proba(m["tfidf"]["vec"].transform(texts)))
+    return sum(parts) / len(parts)
+
+
 def _clause_version():
     """Clause mode uses the re-run model when its files and calibration are present."""
     return "v2" if v2_available() and os.path.exists(_CAL_V2_PATH) else "v1"
@@ -669,15 +744,19 @@ def _calibration(path=None):
 
 
 def clause_eval():
-    """Held-out accuracy of the model-only clause classifier (from the calibration run)."""
+    """Held-out accuracy of the model-only clause classifier: {n_test_clauses, acc, top3, risk_level_acc}."""
+    if clause_v2_available():
+        return CLAUSE_V2["eval"]
     try:
-        return json.load(open(_clause_cal_path()))["eval"]
+        e = json.load(open(_clause_cal_path()))["eval"]
+        return {"n_test_clauses": e["n_test_clauses"], "acc": e["calibrated_acc"], "top3": e["calibrated_top3"],
+                "risk_level_acc": e["risk_level_acc"]}
     except (OSError, KeyError, ValueError):
         return None
 
 
 def clause_mode_available():
-    return os.path.exists(_clause_cal_path())
+    return clause_v2_available() or os.path.exists(_clause_cal_path())
 
 
 _NUMBERED = re.compile(
@@ -775,10 +854,40 @@ def heading_category(clause):
 def classify_clauses(clauses, progress=None):
     """
     One card per clause. Returns a list of dicts in input order:
-        {index, clause, category, risk, reason, source, model_guess, z, presence_score, best_guess, runner_up}
+        {index, clause, category, risk, reason, source, model_guess, z, prob, presence_score, best_guess, runner_up}
     source is "heading" when the clause heading names the category, else "model".
-    category is None (risk "Unrecognized") when no category stands out.
+    category is None (risk "Unrecognized") when no category stands out: with the clause classifier, when
+    its most likely class is "none"; with the fallback, when the standardized score z is below the cut-off.
+    prob (clause classifier) is the probability of the best of the 41 categories; z is None then.
     """
+    if clause_v2_available():
+        labels = CLAUSE_V2["labels"]
+        idx = [labels.index(c) for c in CATEGORIES]
+        out = []
+        for i in range(0, len(clauses), 16):
+            probs = clause_probs(clauses[i:i + 16])
+            for k, cl in enumerate(clauses[i:i + 16]):
+                p41 = probs[k][idx]
+                order = np.argsort(-p41)
+                best, second = int(order[0]), int(order[1])
+                is_none = labels[int(probs[k].argmax())] == "none"
+                by_heading = heading_category(cl)
+                if by_heading:
+                    cat, source = by_heading, "heading"
+                else:
+                    cat, source = (None if is_none else CATEGORIES[best]), "model"
+                level, reason = risk_of(cat) if cat else ("Unrecognized", "No clause category stands out clearly — review manually.")
+                out.append({
+                    "index": i + k + 1, "number": clause_number(cl) or str(i + k + 1),
+                    "clause": cl, "category": cat, "risk": level, "reason": reason,
+                    "source": source, "model_guess": CATEGORIES[best], "z": None,
+                    "prob": float(p41[best]), "none_prob": float(probs[k][labels.index("none")]),
+                    "presence_score": float(p41[best]), "best_guess": CATEGORIES[best],
+                    "runner_up": CATEGORIES[second], "runner_up_prob": float(p41[second]),
+                })
+                if progress is not None:
+                    progress(len(out) / len(clauses))
+        return out
     version = _clause_version()
     tok, model = _load_presence(version)
     mean, std, z_cut = _calibration(_clause_cal_path())

@@ -109,6 +109,9 @@ check("decision file: recall-first is micro-F2, balanced is micro-F1 AND",
 check("calibration map: monotone and within 0-1",
       0.0 <= mu.calibrated(0.2) <= mu.calibrated(0.9) <= mu.calibrated(0.999) <= 1.0,
       (mu.calibrated(0.2), mu.calibrated(0.9), mu.calibrated(0.999)))
+check("clause mode uses the clause classifier (41 types + none)",
+      mu.clause_v2_available() and mu.clause_eval()["acc"] > 0.7 and mu.CLAUSE_V2["labels"][-1] == "none"
+      and set(mu.CLAUSE_V2["labels"][:-1]) == set(mu.CATEGORIES), mu.clause_eval())
 check("decision file: a threshold for every category",
       all(set(dec[o][k]) == set(mu.CATEGORIES) for o in dec for k in ("t_tfidf", "t_transformer", "t_avg")))
 

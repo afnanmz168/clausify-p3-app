@@ -238,7 +238,9 @@ st.caption(
     "— read each card as \"look here\". Each bar shows the chance that the clause type is present, "
     "calibrated on held-out CUAD contracts; on contracts unlike CUAD's it is only a guide. Cards under "
     "50% are marked **Possible — check** and listed after the others in their risk group. "
-    "Only the first 30 windows (about 45,500 characters) of a contract are scanned."
+    "Every clause type is checked in the first 30 windows (about 45,500 characters); in longer contracts "
+    "the TF-IDF model picks 5 more windows per clause type to check, so parts of a very long contract "
+    "are never read."
 )
 
 # --------------------------------------------------------------------------- #
@@ -350,6 +352,14 @@ def run_analysis(text, src):
             if it["category"] and it["source"] == "heading":
                 agree = "model agrees" if it["model_guess"] == it["category"] else f"model's own guess: {it['model_guess']}"
                 bar, label = 100, f"Category from the clause heading ({agree})"
+            elif it.get("prob") is not None and it["category"]:
+                bar = int(max(5, round(it["prob"] * 100)))
+                label = (f"Category match (clause classifier): {it['prob']:.0%} "
+                         f"(runner-up: {it['runner_up']}, {it['runner_up_prob']:.0%})")
+            elif it.get("prob") is not None:
+                bar = int(max(5, round(it["prob"] * 100)))
+                label = (f"Closest category: {it['best_guess']} ({it['prob']:.0%}) — the classifier reads this "
+                         f"paragraph as none of the 41 types ({it['none_prob']:.0%})")
             elif it["category"]:
                 strength = "strong" if z >= 4 else "moderate" if z >= 2.5 else "weak"
                 bar = int(max(5, min(100, z / 6 * 100)))
@@ -359,7 +369,7 @@ def run_analysis(text, src):
                 label = f"Closest category: {it['best_guess']} — match too weak to assign (score {z:.1f})"
             rows.append({
                 "#": it["number"], "category": it["category"] or "Unrecognized", "risk": it["risk"],
-                "risk_reason": it["reason"], "decided_by": it["source"], "score": round(z, 2),
+                "risk_reason": it["reason"], "decided_by": it["source"], "score": round(it["prob"], 3) if it.get("prob") is not None else round(z, 2),
                 "transformer_score": round(it["presence_score"], 3), "tfidf_score": None,
                 "quoted_text": it["clause"], "quote": it["clause"], "start": text.find(it["clause"]),
                 "highlight": "", "title": f'Clause {it["number"]} · {it["category"] or "No clear category"}',
@@ -508,8 +518,8 @@ def render(res):
             st.caption(
                 f"When a clause heading names its category, the heading is used. Otherwise the model "
                 f"decides: on {ev['n_test_clauses']} held-out CUAD clauses it picked the right one of 41 "
-                f"categories {ev['calibrated_acc']:.0%} of the time (right one in its top 3: "
-                f"{ev['calibrated_top3']:.0%}; right risk level: {ev['risk_level_acc']:.0%}).")
+                f"categories {ev['acc']:.0%} of the time (right one in its top 3: "
+                f"{ev['top3']:.0%}; right risk level: {ev['risk_level_acc']:.0%}).")
     if any(r.get("plain_english") for r in rows):
         st.caption("The plain-English lines come from the fine-tuned FLAN-T5 summarizer. As the project "
                    "report shows, it describes the clause's category in one sentence rather than "
