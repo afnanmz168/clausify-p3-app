@@ -4,7 +4,7 @@ A Streamlit web app that runs the project's trained models live on any contract 
 presents the clauses **grouped by risk (High / Medium / Low)**, each with a reason, the quoted
 clause and a plain-English line.
 
-> Full write-up: the project report (Section 4.6 for the app, Section 5.3.3 for the models it uses).
+> Full write-up: the project report (Section 4.4.9 for the app, Section 5.3.3 for the models it uses).
 
 | Step | Model | Held-out test result (102 CUAD contracts) |
 |---|---|---|

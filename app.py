@@ -298,7 +298,8 @@ with st.expander("⚙️ Model settings"):
     rule_opts = mu.rule_options()
     if mu.v2_available():
         rule_help = ("On the 102 CUAD test contracts: Recall-first (default) finds 90.3% of High-risk "
-                     "clauses (misses 17 of 176), micro-F1 0.757. The recall-first ensemble finds 86.9% "
+                     "clauses on whole contracts and 88.6% as this app reads them (misses 20 of 176), "
+                     "micro-F1 0.757. The recall-first ensemble finds 86.9% "
                      "with fewer false alarms (micro-F1 0.783), but its TF-IDF half learnt from long SEC "
                      "filings and scores short contracts too low. Balanced has the highest micro-F1 (0.809) "
                      "but finds only 54.0% of High-risk clauses. All settings were chosen on a separate "

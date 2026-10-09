@@ -75,7 +75,7 @@ BASELINE_PATH = next((p for p in (os.path.join(MODELS_DIR, "baseline", "baseline
                                   os.path.join(os.path.dirname(MODELS_DIR), "artifacts", "baseline.pkl"))
                       if os.path.exists(p)), os.path.join(MODELS_DIR, "baseline", "baseline.pkl"))
 
-# Version 2 (October 2026 re-run, report Section 5.4): the presence model reads the whole
+# Version 2 (October 2026 re-run, report Section 5.3.3): the presence model reads the whole
 # 2,000-character window (512 tokens), and the TF-IDF model, the decision rule and one threshold
 # per category were all chosen on a validation split. decision_v2.json holds those choices.
 PRESENCE_V2_DIR = os.path.join(MODELS_DIR, "presence_v2", "final")
@@ -446,7 +446,7 @@ def locate_clause(category, window, version="v1"):
 
 
 RULES = {
-    # version 2: settings chosen on a validation split, tested once (report Section 5.4)
+    # version 2: settings chosen on a validation split, tested once (report Section 5.3.3)
     "RECALL": "Recall-first — DistilBERT (misses the fewest High-risk clauses)",
     "RECALL_ENS": "Recall-first ensemble — DistilBERT and TF-IDF averaged (for long contracts)",
     "BALANCED": "Balanced — both models must agree (highest overall F1, misses more High-risk clauses)",
@@ -456,7 +456,7 @@ RULES = {
 }
 # rule -> (tuning objective in decision_v2.json, which models decide). The TF-IDF model reads
 # whole-document word statistics learnt from long SEC filings and scores short contracts low,
-# so the default uses the DistilBERT half alone (report Section 5.4).
+# so the default uses the DistilBERT half alone (report Section 5.3.3).
 V2_RULES = {"RECALL": ("f2", "transformer"), "RECALL_ENS": ("f2", "ensemble"), "BALANCED": ("f1", "ensemble")}
 
 
@@ -505,7 +505,7 @@ def analyze(text, threshold=0.5, rule=None, progress=None):
     """
     Full pipeline for one contract.
 
-    Version 2 (default when its files are present; report Section 5.4), with the presence model
+    Version 2 (default when its files are present; report Section 5.3.3), with the presence model
     reading the whole window and every setting chosen on a validation split:
       rule "RECALL"    : DistilBERT score >= its per-category threshold, chosen to maximise
                          micro-F2 (a missed clause counts more than a false alarm).
@@ -588,7 +588,7 @@ def tfidf_scores(text, version="v1"):
 
 
 # --------------------------------------------------------------------------- #
-# Summarizer — fine-tuned FLAN-T5-small. The report (Section 5.1) shows it maps
+# Summarizer — fine-tuned FLAN-T5-small. The report (Section 5.1.3) shows it maps
 # a clause to one of 41 category-level plain-English sentences rather than
 # summarizing the specific wording; the app labels its output accordingly.
 # --------------------------------------------------------------------------- #

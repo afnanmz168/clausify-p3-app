@@ -1,5 +1,5 @@
-# Clausify app tests, run 2026-10-09 22:05 +06 on macOS 26.6.2, Python 3.13.5
-# code: commit 68bb1c6 plus the uncommitted changes that are committed together with this log
+# Clausify app tests, run 2026-10-10 00:53 +06 on macOS 26.6.2, Python 3.13.5
+# code: commit 48e5c52 plus the uncommitted changes that are committed together with this log
 # models: /Users/afnanmazumder/Desktop/final project p3/notebooks/outputs | presence v2: True | span v2: True | clause v2: True | extra windows: 5
 # command: python3 tests/test_app.py   (warnings and progress bars removed from this log)
 
@@ -36,7 +36,7 @@
 [PASS] special chars: HTML escaped  
 [PASS] special chars: $ escaped  
 [PASS] numbered lines without blank lines: 9 clauses  9
-[PASS] longest CUAD contract: no crash  338,211 chars, 101s, {'🔴': 6, '🟠': 15, '🟢': 10}
+[PASS] longest CUAD contract: no crash  338,211 chars, 73s, {'🔴': 6, '🟠': 15, '🟢': 10}
 [PASS] docx extraction  7032
 [PASS] pdf extraction  2989
 [PASS] image-only pdf: warns  Very little text could be read from this PDF. It may be a sc
