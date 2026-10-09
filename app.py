@@ -286,15 +286,22 @@ analyze_as = st.radio(
          "Separate clauses for a short list of paragraphs.",
 )
 with st.expander("⚙️ Model settings"):
-    rule_opts = ["TRANS", "AND"] if mu.baseline_available() else ["TRANS"]
+    rule_opts = mu.rule_options()
+    if mu.v2_available():
+        rule_help = ("On the 102 CUAD test contracts: Recall-first (default) finds 90.3% of High-risk "
+                     "clauses (misses 17 of 176), micro-F1 0.757. The recall-first ensemble finds 86.9% "
+                     "with fewer false alarms (micro-F1 0.783), but its TF-IDF half learnt from long SEC "
+                     "filings and scores short contracts too low. Balanced has the highest micro-F1 (0.809) "
+                     "but finds only 54.0% of High-risk clauses. All settings were chosen on a separate "
+                     "validation split, with one threshold per clause type.")
+    else:
+        rule_help = ("Version-2 model files not found, so the original models are used. DistilBERT alone "
+                     "misses 15.9% of High-risk clauses on the CUAD test set, the AND-ensemble 36.9%.")
     rule = st.radio("Whole-contract detection", rule_opts, format_func=lambda r: mu.RULES[r],
-                    help="Cautious (default) misses far fewer High-risk clauses: 15.9% missed vs 36.9% for "
-                         "Balanced on the CUAD test set. Balanced is the report's headline configuration "
-                         "(highest micro-F1, 0.779, fewer false alarms), but its TF-IDF half was trained on "
-                         "full-length contracts and vetoes most clauses in short ones.")
+                    help=rule_help)
     use_summ = st.checkbox("Add a plain-English line to each clause (FLAN-T5 summarizer)",
                            value=mu.summarizer_available(), disabled=not mu.summarizer_available())
-threshold = 0.5   # fixed decision threshold (the default used in every reported evaluation)
+threshold = 0.5   # version-1 fallback only; version 2 uses the per-category thresholds in decision_v2.json
 go = st.button("🔍  Analyze contract", type="primary", disabled=not contract_text)
 
 # --------------------------------------------------------------------------- #
@@ -351,22 +358,33 @@ def run_analysis(text, src):
     else:
         present, scores = mu.analyze(text, threshold=threshold, rule=rule,
                                      progress=upd("Scanning for the 41 clause types"))
+        decided_by = {"RECALL": "Recall-first DistilBERT", "RECALL_ENS": "Recall-first ensemble",
+                      "BALANCED": "Balanced ensemble",
+                      "AND": "AND-ensemble (original)", "TRANS": "DistilBERT (original)"}[rule]
         for k, it in enumerate(present, 1):
             pt, pf = it["transformer_score"], it["tfidf_score"]
-            if rule == "AND":
+            if rule == "RECALL":
+                label = (f"DistilBERT score {_pct(pt)}, above the {_pct(it['threshold'])} set for this "
+                         f"clause type (TF-IDF {_pct(pf)}, not used for detection)")
+            elif rule == "RECALL_ENS":
+                label = (f"Combined score {_pct(it['score'])}, above the {_pct(it['threshold'])} set for this "
+                         f"clause type (DistilBERT {_pct(pt)}, TF-IDF {_pct(pf)})")
+            elif rule == "BALANCED":
+                label = f"Both models above their thresholds for this clause type (DistilBERT {_pct(pt)}, TF-IDF {_pct(pf)})"
+            elif rule == "AND":
                 label = f"Ensemble score {_pct(it['score'])} (DistilBERT {_pct(pt)}, TF-IDF {_pct(pf)})"
             else:
                 label = f"DistilBERT score {_pct(pt)} (TF-IDF {_pct(pf)}, not used for detection)"
             rows.append({
                 "#": k, "category": it["category"], "risk": it["risk"], "risk_reason": it["reason"],
-                "decided_by": "AND-ensemble" if rule == "AND" else "DistilBERT", "score": round(it["score"], 3),
+                "decided_by": decided_by, "score": round(it["score"], 3),
                 "transformer_score": round(pt, 3), "tfidf_score": None if pf is None else round(pf, 3),
                 "quoted_text": it["span_text"], "quote": it["span_text"], "start": it["start"],
                 "highlight": it["highlight"], "title": it["category"], "label": it["category"],
                 "bar": round(it["score"] * 100), "bar_label": label, "score_text": label,
                 "snippet_label": "Located clause · DistilBERT picks the paragraph, the span model highlights the key phrase",
             })
-        mode_name = "whole contract · " + ("AND-ensemble" if rule == "AND" else "DistilBERT alone")
+        mode_name = "whole contract · " + decided_by
 
     if use_summ and rows:
         summaries = mu.summarize([r["quote"] for r in rows], progress=upd("Writing plain-English lines"))

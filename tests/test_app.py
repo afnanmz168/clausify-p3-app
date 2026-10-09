@@ -80,16 +80,29 @@ check("title / preamble / signature listed as skipped", any("3 paragraphs not an
 p = page(run_app(DEMO18))
 check("auto mode on the same text -> 18 clause cards", p["cards"] == 18, p["cards"])
 
-# 2. whole contract, default (DistilBERT) and ensemble, summaries off ------------------
+# 2. whole contract, default (recall-first DistilBERT, version 2) and the ensembles ----
+assert mu.v2_available(), "version-2 model files not found (presence_v2/, baseline_v2)"
+assert mu.default_rule() == "RECALL"
 p = page(run_app(DEMO, analyze_as="📄 Whole contract"))
 check("whole contract: no exceptions", not p["exceptions"], p["exceptions"])
-check("whole contract: 30 types, 7 High", sum(p["pills"].values()) == 30 and p["pills"].get("🔴") == 7, p["pills"])
+check("whole contract: 27 types, 5 High", sum(p["pills"].values()) == 27 and p["pills"].get("🔴") == 5, p["pills"])
 check("whole contract: links resolve to highlights", p["link_targets_ok"], (p["links"], p["anchors"]))
 check("whole contract: $ escaped", not p["raw_dollar"])
-p = page(run_app(DEMO, analyze_as="📄 Whole contract", rule="AND", summaries=False))
-check("AND-ensemble: runs", not p["exceptions"], p["exceptions"])
-check("AND-ensemble: fewer detections than DistilBERT", 0 < sum(p["pills"].values()) < 30, p["pills"])
+check("whole contract: says which rule decided", "Recall-first DistilBERT" in p["md"], "")
+p = page(run_app(DEMO, analyze_as="📄 Whole contract", rule="BALANCED", summaries=False))
+check("Balanced ensemble: runs", not p["exceptions"], p["exceptions"])
+check("Balanced ensemble: fewer detections than recall-first", 0 < sum(p["pills"].values()) < 27, p["pills"])
 check("summaries off: no plain-English lines", p["plain"] == 0, p["plain"])
+p = page(run_app(DEMO, analyze_as="📄 Whole contract", rule="RECALL_ENS", summaries=False))
+check("Recall-first ensemble: runs", not p["exceptions"] and sum(p["pills"].values()) > 0, p["pills"])
+
+# 2b. the deployed thresholds are exactly the ones tested in the report ---------------
+dec = mu.DECISION_V2["objectives"]
+check("decision file: recall-first is micro-F2, balanced is micro-F1 AND",
+      mu.V2_RULES["RECALL"] == ("f2", "transformer") and dec["f1"]["rule"] == "AND" and dec["f2"]["rule"] == "AVG",
+      (mu.V2_RULES, dec["f1"]["rule"], dec["f2"]["rule"]))
+check("decision file: a threshold for every category",
+      all(set(dec[o][k]) == set(mu.CATEGORIES) for o in dec for k in ("t_tfidf", "t_transformer", "t_avg")))
 
 # 3. auto mode on a full contract picks whole-contract mode --------------------------
 p = page(run_app(DEMO))

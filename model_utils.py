@@ -54,7 +54,8 @@ def _resolve_models_dir():
             return d
     try:
         from huggingface_hub import snapshot_download
-        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "span/*", "summarizer/*", "baseline/*"])
+        return snapshot_download(HF_REPO, allow_patterns=["presence_mil/*", "presence_v2/*", "span/*",
+                                                          "summarizer/*", "baseline/*", "baseline_v2/*"])
     except Exception:            # offline / repo missing: app.py shows a clear error
         return os.environ.get("CUAD_MODELS_DIR", os.path.join(BASE, "models"))
 
@@ -68,12 +69,23 @@ BASELINE_PATH = next((p for p in (os.path.join(MODELS_DIR, "baseline", "baseline
                                   os.path.join(os.path.dirname(MODELS_DIR), "artifacts", "baseline.pkl"))
                       if os.path.exists(p)), os.path.join(MODELS_DIR, "baseline", "baseline.pkl"))
 
+# Version 2 (October 2026 re-run, report Section 5.4): the presence model reads the whole
+# 2,000-character window (512 tokens), and the TF-IDF model, the decision rule and one threshold
+# per category were all chosen on a validation split. decision_v2.json holds those choices.
+PRESENCE_V2_DIR = os.path.join(MODELS_DIR, "presence_v2", "final")
+BASELINE_V2_PATH = next((p for p in (os.path.join(MODELS_DIR, "baseline_v2", "baseline.pkl"),
+                                     os.path.join(os.path.dirname(MODELS_DIR), "artifacts", "baseline_v2.pkl"))
+                         if os.path.exists(p)), os.path.join(MODELS_DIR, "baseline_v2", "baseline.pkl"))
+with open(os.path.join(BASE, "decision_v2.json")) as f:
+    DECISION_V2 = json.load(f)
+
 DEVICE = "cpu"
 
 # Windowing — identical to the notebook (2000-char windows, 1500 stride).
 WIN, STRIDE = 2000, 1500
 MAX_WINDOWS = 30          # cap for very long contracts (keeps the demo snappy)
 PRESENCE_MAXLEN = 256
+PRESENCE_V2_MAXLEN = DECISION_V2["max_len"]
 SPAN_MAXLEN = 320
 FOCUS = 1200              # span focus sub-window
 
@@ -151,12 +163,22 @@ def models_available():
     )
 
 
-@functools.lru_cache(maxsize=1)
-def _load_presence():
-    tok = AutoTokenizer.from_pretrained(PRESENCE_DIR)
-    model = AutoModelForSequenceClassification.from_pretrained(PRESENCE_DIR)
+def v2_available():
+    """True if the version-2 presence model and its TF-IDF model are on disk."""
+    return os.path.exists(os.path.join(PRESENCE_V2_DIR, "config.json")) and os.path.exists(BASELINE_V2_PATH)
+
+
+@functools.lru_cache(maxsize=2)
+def _load_presence(version="v1"):
+    d = PRESENCE_V2_DIR if version == "v2" else PRESENCE_DIR
+    tok = AutoTokenizer.from_pretrained(d)
+    model = AutoModelForSequenceClassification.from_pretrained(d)
     model.to(DEVICE).eval()
     return tok, model
+
+
+def _presence_maxlen(version):
+    return PRESENCE_V2_MAXLEN if version == "v2" else PRESENCE_MAXLEN
 
 
 @functools.lru_cache(maxsize=1)
@@ -168,11 +190,15 @@ def _load_span():
 
 
 def warm_up():
-    """Load both models so the first analysis isn't slow."""
-    _load_presence()
+    """Load the models used by the default settings so the first analysis isn't slow."""
+    if v2_available():
+        _load_presence("v2")
+        _load_baseline("v2")
+    else:
+        _load_presence()
+        if baseline_available():
+            _load_baseline()
     _load_span()
-    if baseline_available():
-        _load_baseline()
     if summarizer_available():
         _load_summarizer()
 
@@ -189,7 +215,7 @@ def make_windows(text):
     return wins[:MAX_WINDOWS]
 
 
-def predict_presence(text, progress=None):
+def predict_presence(text, progress=None, version="v1"):
     """
     For every category, max-pool the window-level classifier over all windows.
 
@@ -197,7 +223,8 @@ def predict_presence(text, progress=None):
         scores       {category: max probability the clause is present}
         best_window  {category: the window that scored highest (for span)}
     """
-    tok, model = _load_presence()
+    tok, model = _load_presence(version)
+    maxlen = _presence_maxlen(version)
     wins = make_windows(text)
     scores, best_window = {}, {}
     n = len(CATEGORIES)
@@ -209,7 +236,7 @@ def predict_presence(text, progress=None):
             batch = wins[i:i + 16]
             enc = tok(
                 [q] * len(batch), batch,
-                truncation=True, max_length=PRESENCE_MAXLEN,
+                truncation=True, max_length=maxlen,
                 padding=True, return_tensors="pt",
             ).to(DEVICE)
             with torch.no_grad():
@@ -284,7 +311,7 @@ def _paragraphs(text, max_len=700):
     return out or [text.strip()]
 
 
-def locate_clause(category, window):
+def locate_clause(category, window, version="v1"):
     """
     Pick the paragraph of `window` that the presence model scores highest for
     `category`. The span model alone is not a reliable locator: it was trained on
@@ -294,10 +321,10 @@ def locate_clause(category, window):
 
     Returns: (paragraph, highlighted_span)
     """
-    tok, model = _load_presence()
+    tok, model = _load_presence(version)
     paras = _paragraphs(window)
     q = CAT_QUESTIONS[category]
-    enc = tok([q] * len(paras), paras, truncation=True, max_length=PRESENCE_MAXLEN,
+    enc = tok([q] * len(paras), paras, truncation=True, max_length=_presence_maxlen(version),
               padding=True, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
         lg = model(**enc).logits
@@ -307,9 +334,28 @@ def locate_clause(category, window):
 
 
 RULES = {
-    "AND": "Balanced — AND-ensemble (TF-IDF and DistilBERT must agree)",
-    "TRANS": "Cautious — DistilBERT alone (catches more High-risk clauses)",
+    # version 2: settings chosen on a validation split, tested once (report Section 5.4)
+    "RECALL": "Recall-first — DistilBERT (misses the fewest High-risk clauses)",
+    "RECALL_ENS": "Recall-first ensemble — DistilBERT and TF-IDF averaged (for long contracts)",
+    "BALANCED": "Balanced — both models must agree (highest overall F1, misses more High-risk clauses)",
+    # version 1 fallback, used only when the version-2 files are not available
+    "TRANS": "Original model — DistilBERT alone",
+    "AND": "Original model — AND-ensemble (TF-IDF and DistilBERT must agree)",
 }
+# rule -> (tuning objective in decision_v2.json, which models decide). The TF-IDF model reads
+# whole-document word statistics learnt from long SEC filings and scores short contracts low,
+# so the default uses the DistilBERT half alone (report Section 5.4).
+V2_RULES = {"RECALL": ("f2", "transformer"), "RECALL_ENS": ("f2", "ensemble"), "BALANCED": ("f1", "ensemble")}
+
+
+def default_rule():
+    return "RECALL" if v2_available() else "TRANS"
+
+
+def rule_options():
+    if v2_available():
+        return ["RECALL", "RECALL_ENS", "BALANCED"]
+    return ["TRANS", "AND"] if baseline_available() else ["TRANS"]
 
 
 def _full_paragraph(text, para, max_len=1500):
@@ -328,37 +374,67 @@ def _full_paragraph(text, para, max_len=1500):
     return full, text.find(full, s)
 
 
-def analyze(text, threshold=0.5, rule="TRANS", progress=None):
+def _decide_v2(rule, cat, pt, pf):
+    """(present?, score shown, threshold shown) under the tested version-2 decision rule."""
+    objective, deciders = V2_RULES[rule]
+    d = DECISION_V2["objectives"][objective]
+    if deciders == "transformer":
+        thr = d["t_transformer"][cat]
+        return pt >= thr, pt, thr
+    if d["rule"] == "AVG":
+        sc, thr = (pt + pf) / 2, d["t_avg"][cat]
+        return sc >= thr, sc, thr
+    ok_t, ok_f = pt >= d["t_transformer"][cat], pf >= d["t_tfidf"][cat]
+    hit = (ok_t and ok_f) if d["rule"] == "AND" else (ok_t or ok_f)
+    return hit, min(pt, pf), None
+
+
+def analyze(text, threshold=0.5, rule=None, progress=None):
     """
     Full pipeline for one contract.
 
-    rule "AND"  : a category is present when min(TF-IDF, DistilBERT) >= threshold
-                  (the report's headline configuration, micro-F1 0.779);
-    rule "TRANS": DistilBERT max-pooled score alone (higher High-risk recall).
-    Falls back to "TRANS" if the TF-IDF baseline is not available.
+    Version 2 (default when its files are present; report Section 5.4), with the presence model
+    reading the whole window and every setting chosen on a validation split:
+      rule "RECALL"    : DistilBERT score >= its per-category threshold, chosen to maximise
+                         micro-F2 (a missed clause counts more than a false alarm).
+      rule "RECALL_ENS": average of DistilBERT and TF-IDF >= a per-category threshold (micro-F2).
+      rule "BALANCED"  : both models above their own per-category thresholds (micro-F1).
+    Version 1 (fallback; the first report's models, fixed 0.5 threshold):
+      rule "AND"  : min(TF-IDF, DistilBERT) >= threshold;   rule "TRANS": DistilBERT alone.
 
     Returns (present, scores):
         present  list of dicts, one per present category, sorted High -> Low then by score:
-                 {category, score, transformer_score, tfidf_score, span_text, highlight,
-                  start, risk, reason}
+                 {category, score, threshold, transformer_score, tfidf_score, span_text,
+                  highlight, start, risk, reason}
         scores   {category: {"transformer": p, "tfidf": p or None, "score": p}}
     """
-    trans, best_window = predict_presence(text, progress=progress)
-    tfidf = tfidf_scores(text) if baseline_available() else {}
-    if rule == "AND" and not tfidf:
+    rule = rule or default_rule()
+    if rule in V2_RULES and not v2_available():
         rule = "TRANS"
+    version = "v2" if rule in V2_RULES else "v1"
+    trans, best_window = predict_presence(text, progress=progress, version=version)
+    if version == "v2":
+        tfidf = tfidf_scores(text, "v2")
+    else:
+        tfidf = tfidf_scores(text) if baseline_available() else {}
+        if rule == "AND" and not tfidf:
+            rule = "TRANS"
 
     scores, present = {}, []
     for cat, pt in trans.items():
         pf = tfidf.get(cat)
-        sc = min(pt, pf) if rule == "AND" else pt
+        if version == "v2":
+            hit, sc, thr = _decide_v2(rule, cat, pt, pf)
+        else:
+            sc = min(pt, pf) if rule == "AND" else pt
+            hit, thr = sc >= threshold, threshold
         scores[cat] = {"transformer": pt, "tfidf": pf, "score": sc}
-        if sc >= threshold:
-            para, span = locate_clause(cat, best_window[cat])
+        if hit:
+            para, span = locate_clause(cat, best_window[cat], version)
             para, start = _full_paragraph(text, para)
             level, reason = risk_of(cat)
             present.append({
-                "category": cat, "score": sc, "transformer_score": pt, "tfidf_score": pf,
+                "category": cat, "score": sc, "threshold": thr, "transformer_score": pt, "tfidf_score": pf,
                 "span_text": para,          # the located paragraph, quoted on the card
                 "highlight": span,          # span-model highlight inside it ("" if none)
                 "start": start,             # position in the contract (-1 if not found)
@@ -378,16 +454,16 @@ def baseline_available():
     return os.path.exists(BASELINE_PATH)
 
 
-@functools.lru_cache(maxsize=1)
-def _load_baseline():
+@functools.lru_cache(maxsize=2)
+def _load_baseline(version="v1"):
     import pickle
-    with open(BASELINE_PATH, "rb") as f:
+    with open(BASELINE_V2_PATH if version == "v2" else BASELINE_PATH, "rb") as f:
         return pickle.load(f)
 
 
-def tfidf_scores(text):
+def tfidf_scores(text, version="v1"):
     """{category: probability the category is present} from the full-document TF-IDF model."""
-    bl = _load_baseline()
+    bl = _load_baseline(version)
     X = bl["vec"].transform([text])
     out = {}
     for cat in CATEGORIES:
